@@ -1,0 +1,239 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<title>Informe de escaneo #{{ scan.id }} - {{ scan.targets }}</title>
+<style>
+  /* Todo el estilo va aqui: el informe tiene que verse igual suelto, sin servidor. */
+  body { font: 14px/1.6 "Segoe UI", system-ui, sans-serif; color: #1b2733; margin: 0;
+         background: #f4f6f8; }
+  .page { max-width: 900px; margin: 0 auto; background: #fff; padding: 46px 52px;
+          box-shadow: 0 0 22px rgba(0,0,0,.08); }
+  h1 { font-size: 24px; margin: 0 0 4px; }
+  h2 { font-size: 17px; margin: 34px 0 10px; padding-bottom: 6px; border-bottom: 2px solid #e3e8ee; }
+  h3 { font-size: 14px; margin: 20px 0 6px; }
+  .sub { color: #5b6b7c; margin: 0 0 26px; }
+  table { width: 100%; border-collapse: collapse; margin-bottom: 14px; }
+  th, td { text-align: left; padding: 7px 9px; border-bottom: 1px solid #e3e8ee; vertical-align: top; }
+  th { background: #f7f9fb; font-size: 12px; text-transform: uppercase; letter-spacing: .4px; color: #5b6b7c; }
+  .mono { font-family: Consolas, "Cascadia Mono", monospace; font-size: 12.5px; }
+  .badge { display: inline-block; padding: 2px 9px; border-radius: 11px; font-size: 11.5px;
+           font-weight: 700; color: #fff; }
+  .critical { background: #c0392b; } .high { background: #e2622d; }
+  .medium { background: #d9a326; color: #241d05; } .low { background: #3d8fd1; }
+  .info { background: #6b7b8c; }
+  .tiles { display: flex; gap: 10px; margin: 18px 0 8px; }
+  .tile { flex: 1; border: 1px solid #e3e8ee; border-top: 4px solid #6b7b8c; border-radius: 6px;
+          padding: 10px 12px; }
+  .tile.critical { border-top-color: #c0392b; } .tile.high { border-top-color: #e2622d; }
+  .tile.medium { border-top-color: #d9a326; } .tile.low { border-top-color: #3d8fd1; }
+  .tile .v { font-size: 22px; font-weight: 700; } .tile .l { font-size: 11.5px; color: #5b6b7c;
+          text-transform: uppercase; letter-spacing: .4px; }
+  .finding { border: 1px solid #e3e8ee; border-radius: 7px; padding: 14px 16px; margin-bottom: 12px;
+             page-break-inside: avoid; }
+  .finding .head { display: flex; gap: 10px; align-items: baseline; margin-bottom: 6px; }
+  .finding .head .t { font-weight: 700; flex: 1; }
+  pre { background: #f7f9fb; border: 1px solid #e3e8ee; border-radius: 5px; padding: 9px 11px;
+        overflow-x: auto; font-size: 12px; white-space: pre-wrap; }
+  .muted { color: #5b6b7c; }
+  .small { font-size: 12.5px; }
+  .aviso { border-left: 3px solid #d9a326; background: #fdf7e7; padding: 10px 14px; margin: 18px 0;
+           font-size: 13px; }
+  footer { margin-top: 40px; padding-top: 14px; border-top: 1px solid #e3e8ee; color: #5b6b7c;
+           font-size: 12px; }
+  @media print { body { background: #fff; } .page { box-shadow: none; padding: 0; } }
+</style>
+</head>
+<body>
+<div class="page">
+
+<h1>Informe de escaneo #{{ scan.id }}</h1>
+<p class="sub">{{ scan.name }} &middot; generado el {{ generated }}</p>
+
+<table>
+  <tbody>
+    <tr><th style="width:190px">Objetivo</th><td class="mono">{{ scan.targets }}</td></tr>
+    <tr><th>Perfil</th><td>{{ scan.profile }}</td></tr>
+    <tr><th>Estado</th><td>{{ scan.status }}{% if scan.error %} - {{ scan.error }}{% endif %}</td></tr>
+    <tr><th>Fecha de lanzamiento</th><td>{{ scan.created_at[:16].replace('T', ' ') }} UTC</td></tr>
+    <tr><th>Duracion</th><td>{{ '%.1f'|format(scan.elapsed) }} segundos</td></tr>
+    <tr><th>Hosts</th><td>{{ scan.hosts_up }} vivos de {{ scan.hosts_total }}</td></tr>
+    <tr><th>Puertos abiertos</th><td>{{ total_open }}</td></tr>
+    <tr><th>Riesgo agregado</th><td><strong>{{ scan.risk_score }}</strong> / 100</td></tr>
+    {% if scan.authorized_by %}<tr><th>Autorizado por</th><td>{{ scan.authorized_by }}</td></tr>{% endif %}
+    {% if scan.notes %}<tr><th>Notas</th><td>{{ scan.notes }}</td></tr>{% endif %}
+    <tr><th>Comando ejecutado</th><td class="mono">{{ scan.nmap_args }}</td></tr>
+  </tbody>
+</table>
+
+<h2>Resumen</h2>
+<div class="tiles">
+  <div class="tile critical"><div class="v">{{ counts.critical }}</div><div class="l">Criticas</div></div>
+  <div class="tile high"><div class="v">{{ counts.high }}</div><div class="l">Altas</div></div>
+  <div class="tile medium"><div class="v">{{ counts.medium }}</div><div class="l">Medias</div></div>
+  <div class="tile low"><div class="v">{{ counts.low }}</div><div class="l">Bajas</div></div>
+</div>
+
+{% if prioritarios %}
+<p>Requieren atencion inmediata <strong>{{ prioritarios|length }}</strong> hallazgos de severidad
+alta o critica:</p>
+<table>
+  <thead><tr><th style="width:80px">Severidad</th><th>Hallazgo</th><th style="width:150px">Ubicacion</th></tr></thead>
+  <tbody>
+  {% for f in prioritarios %}
+    <tr>
+      <td><span class="badge {{ severity_slug(f.severity) }}">{{ severity_label(f.severity) }}</span></td>
+      <td>{{ f.title }}</td>
+      <td class="mono">{{ f.host }}{% if f.port %}:{{ f.port }}{% endif %}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p>No se han detectado hallazgos de severidad alta o critica.</p>
+{% endif %}
+
+<div class="aviso">
+  Este informe distingue exposiciones observadas, posibles afectaciones por version y
+  comprobaciones positivas de scripts NSE. El inventario Windows, si aparece, registra
+  versiones y KB instaladas; no verifica por si solo la aplicabilidad de cada CVE.
+  Un resultado limpio no demuestra que el sistema sea seguro.
+</div>
+
+<h2>Detalle de hallazgos</h2>
+{% for f in findings %}
+<div class="finding">
+  <div class="head">
+    <span class="badge {{ severity_slug(f.severity) }}">{{ severity_label(f.severity) }}</span>
+    <span class="small muted">{{ assessment_label(f.assessment) }}</span>
+    <span class="t">{{ f.title }}</span>
+    <span class="mono small muted">{{ f.host }}{% if f.port %}:{{ f.port }}/{{ f.protocol }}{% endif %}</span>
+  </div>
+  <p class="small">{{ f.description }}</p>
+  {% if f.service %}<p class="small muted">Servicio: {{ f.service }}</p>{% endif %}
+  {% set lista = cves(f.cves) %}
+  {% if lista %}
+  <p class="small"><strong>CVE:</strong>
+    {% for cve in lista %}<a href="https://nvd.nist.gov/vuln/detail/{{ cve }}">{{ cve }}</a>{{ ", " if not loop.last }}{% endfor %}
+    {% if f.cvss %}<span class="muted">(CVSS maximo {{ f.cvss }})</span>{% endif %}
+  </p>
+  {% endif %}
+  {% if f.remediation %}<h3>Remediacion</h3><p class="small">{{ f.remediation }}</p>{% endif %}
+  {% if f.evidence %}<h3>Evidencia</h3><pre>{{ f.evidence }}</pre>{% endif %}
+  <p class="small muted">Origen: {{ f.source }}</p>
+</div>
+{% else %}
+<p class="muted">Sin hallazgos registrados.</p>
+{% endfor %}
+
+<h2>CVE candidatas por CPE</h2>
+<p class="small muted">Estas coincidencias NVD no confirman vulnerabilidad. El CVSS es el de la CVE, no el del equipo.</p>
+{% if candidates %}
+<table><thead><tr><th>CVE</th><th>Riesgo</th><th>Host</th><th>CPE consultado</th></tr></thead><tbody>
+{% for candidate in candidates %}
+<tr><td><a href="https://nvd.nist.gov/vuln/detail/{{ candidate.cve_id }}">{{ candidate.cve_id }}</a></td>
+<td>CVSS {{ candidate.cvss if candidate.cvss is not none else '-' }}{% if candidate.cvss_source %}<br><span class="small muted">{{ candidate.cvss_source }}</span>{% endif %}
+{% if candidate.known_exploited %}<br><strong>Explotada según CISA KEV</strong>{% endif %}
+{% if candidate.epss is not none %}<br>EPSS {{ '%.2f'|format(candidate.epss * 100) }}% <span class="small muted">(percentil {{ '%.1f'|format(candidate.epss_percentile * 100) }})</span>{% endif %}</td>
+<td class="mono">{{ candidate.host }}:{{ candidate.port }}</td>
+<td class="mono">{{ candidate.queried_cpe }}<br><span class="muted">{{ nvd_match_note(candidate.match_type, candidate.requires_other_cpe) }}</span>
+{% if candidate.cvss_vector %}<br><span class="muted">{{ candidate.cvss_vector }}</span>{% endif %}
+{% if candidate.vendor_advisory %}<br><a href="{{ candidate.vendor_advisory }}">Aviso del fabricante</a>{% endif %}</td></tr>
+{% endfor %}
+</tbody></table>
+{% else %}<p class="muted small">Sin coincidencias guardadas.</p>{% endif %}
+
+<h2>Actualizaciones Windows</h2>
+{% if patch_statuses %}
+{% for patch in patch_statuses %}
+<p><strong class="mono">{{ patch.host }}</strong>: {{ patch.product_name }}. Build instalado {{ patch.installed_build }}; requerido por {{ patch.release_id }}: {{ patch.required_build }}{% if patch.required_kb %} (KB{{ patch.required_kb }}){% endif %}. Estado: <strong>{{ {'current':'VIGENTE','outdated':'DESACTUALIZADO','partial':'PARCIAL'}[patch.status] }}</strong>{% if patch.unresolved %}; {{ patch.unresolved }} entradas sin build evaluable{% endif %}.</p>
+{% endfor %}
+{% if patch_candidates %}<table><thead><tr><th>CVE pendiente</th><th>CVSS</th><th>Build corregido</th><th>Actualizacion</th></tr></thead><tbody>
+{% for item in patch_candidates %}<tr>
+<td><a href="https://msrc.microsoft.com/update-guide/vulnerability/{{ item.cve_id }}">{{ item.cve_id }}</a><br><span class="small muted">{{ item.title }}</span></td>
+<td>{{ item.cvss if item.cvss is not none else '-' }}</td><td class="mono">{{ item.fixed_build }}</td>
+<td>{% if item.url %}<a href="{{ item.url }}">KB{{ item.kb }}</a>{% else %}KB{{ item.kb or '-' }}{% endif %}</td>
+</tr>{% endfor %}</tbody></table>{% endif %}
+{% else %}<p class="muted">Sin evaluacion MSRC guardada.</p>{% endif %}
+
+<h2>Controles autenticados</h2>
+{% if controls %}
+<p class="small muted">Resultados tecnicos puntuales; no constituyen una certificacion CIS ni ENS.</p>
+<table>
+  <thead><tr><th>Host</th><th>Control</th><th>Estado</th><th>Evidencia y referencias</th></tr></thead>
+  <tbody>{% for item in controls %}<tr>
+    <td class="mono">{{ item.host }}</td>
+    <td><strong>{{ item.control_id }}</strong><br>{{ item.title }}</td>
+    <td>{{ {'pass':'CUMPLE','fail':'FALLA','unknown':'SIN DATOS','not_applicable':'NO APLICA'}[item.status] }}</td>
+    <td class="small">{{ item.evidence }}{% set refs = json.loads(item.references_json) %}{% if refs %}<br><span class="muted">{{ refs|join(' · ') }}</span>{% endif %}</td>
+  </tr>{% endfor %}</tbody>
+</table>
+{% else %}<p class="muted">No se ejecuto una evaluacion autenticada de controles.</p>{% endif %}
+
+<h2>Superficie expuesta</h2>
+{% for host, ports in hosts %}
+<h3 class="mono">{{ host.address }}
+  {% set names = hostnames(host.hostnames) %}
+  {% if names %}<span class="muted small">({{ names|join(', ') }})</span>{% endif %}
+</h3>
+{% if inventories.get(host.address) %}
+{% set inv = inventories[host.address] %}
+{% if inv.platform == 'linux' %}
+<p class="small"><strong>Inventario Linux autenticado:</strong>
+{{ inv.os_name }} {{ inv.os_version }}; kernel {{ inv.kernel }}; {{ inv.packages|length }} paquetes;
+{% if inv.security_updates_checked %}{{ inv.security_updates|length }} actualizaciones de seguridad pendientes{% else %}actualizaciones de seguridad sin evaluar{% endif %}.</p>
+{% if inv.sshd %}<p class="small">SSH: root {{ inv.sshd.permit_root_login or 'sin dato' }};
+autenticacion por contrasena {{ inv.sshd.password_authentication or 'sin dato' }}.</p>{% endif %}
+<p class="small">Firewall {{ 'activo' if inv.firewall.active is sameas true else 'inactivo' if inv.firewall.active is sameas false else 'sin dato' }};
+ASLR {{ inv.aslr if inv.aslr is not none else 'sin dato' }}; SELinux {{ inv.selinux or 'sin dato' }}; AppArmor {{ inv.apparmor or 'sin dato' }}.</p>
+{% else %}
+<p class="small"><strong>Inventario Windows autenticado:</strong>
+{{ inv.os_name }} {{ inv.os_version }}; build {{ inv.os_build }}{% if inv.ubr is not none %}.{{ inv.ubr }}{% endif %};
+BIOS {{ inv.bios_version or 'sin dato' }}; Intel ME {{ inv.intel_me_firmware or 'sin dato' }}.
+{{ inv.updates|length }} KB y {{ inv.software|length }} aplicaciones registradas.</p>
+{% if inv.smb_server %}<p class="small">Servidor SMB: SMBv1
+{{ 'habilitado' if inv.smb_server.smb1_enabled is sameas true else 'deshabilitado' if inv.smb_server.smb1_enabled is sameas false else 'sin dato' }};
+firma {{ 'obligatoria' if inv.smb_server.signing_required is sameas true else 'no obligatoria' if inv.smb_server.signing_required is sameas false else 'sin dato' }}.</p>{% endif %}
+{% if inv.rdp %}<p class="small">RDP: NLA
+{{ 'obligatoria' if inv.rdp.nla_required is sameas true else 'no obligatoria' if inv.rdp.nla_required is sameas false else 'sin dato' }}.</p>{% endif %}
+{% if inv.firewall_profiles %}<p class="small">Firewall:
+{% for profile in inv.firewall_profiles %}{{ profile.name }} {{ 'activo' if profile.active else 'inactivo' }}/{{ 'habilitado' if profile.enabled else 'deshabilitado' }}{{ ', ' if not loop.last }}{% endfor %}.</p>{% endif %}
+{% if inv.defender %}<p class="small">Defender: tiempo real {{ 'activo' if inv.defender.realtime_enabled else 'deshabilitado' }}; firmas de hace {{ inv.defender.signature_age_days }} dias.</p>{% endif %}
+<p class="small">UAC {{ 'habilitado' if inv.uac_enabled is sameas true else 'deshabilitado' if inv.uac_enabled is sameas false else 'sin dato' }}{% if inv.bitlocker %}; BitLocker {{ inv.bitlocker.protection_status }} en {{ inv.bitlocker.mount_point }}{% endif %}; Secure Boot {{ 'habilitado' if inv.secure_boot_enabled is sameas true else 'deshabilitado' if inv.secure_boot_enabled is sameas false else 'sin dato' }}{% if inv.guest_account %}; Guest {{ 'habilitada' if inv.guest_account.enabled else 'deshabilitada' }}{% endif %}.</p>
+<p class="small mono">KB: {{ inv.updates | map(attribute='kb') | join(', ') or 'sin datos' }}</p>
+{% endif %}
+{% endif %}
+<p class="small muted">
+  Estado: {{ host.state }}.
+  {% if host.os_name %} SO probable: {{ host.os_name }} ({{ host.os_accuracy }}%).{% endif %}
+  {% if host.mac %} MAC {{ host.mac }} {{ host.vendor }}.{% endif %}
+</p>
+{% if ports %}
+<table>
+  <thead><tr><th style="width:90px">Puerto</th><th style="width:120px">Servicio</th><th>Version detectada</th></tr></thead>
+  <tbody>
+  {% for port in ports %}
+    <tr>
+      <td class="mono">{{ port.portid }}/{{ port.protocol }}</td>
+      <td>{{ port.service_name or '-' }}</td>
+      <td class="small">{{ port.product }} {{ port.version }}
+        {% if port.extrainfo %}<span class="muted">({{ port.extrainfo }})</span>{% endif %}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p class="muted small">Sin puertos abiertos detectados.</p>
+{% endif %}
+{% else %}
+<p class="muted">Sin hosts registrados.</p>
+{% endfor %}
+
+<footer>
+  Medscan &middot; escaneo #{{ scan.id }} &middot; informe generado el {{ generated }}.
+  Documento de uso interno: contiene informacion sobre la exposicion de sistemas propios.
+</footer>
+
+</div>
+</body>
+</html>

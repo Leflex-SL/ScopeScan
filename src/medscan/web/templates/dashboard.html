@@ -1,0 +1,83 @@
+{% extends "base.html" %}
+{% set active_nav = "dashboard" %}
+{% block title %}Escaneos - Medscan{% endblock %}
+
+{% block content %}
+<h1>Escaneos</h1>
+<p class="lead">Descubrimiento de puertos, servicios y vulnerabilidades sobre nmap.</p>
+
+{% if not env.ready %}
+<div class="notice error">
+  <strong>nmap no esta instalado.</strong> Sin el no se puede escanear nada.
+  Instalalo con <code>winget install -e --id Insecure.Nmap</code> y reinicia el panel.
+</div>
+{% elif not env.privileged %}
+<div class="notice">
+  El panel no corre como administrador: se usara connect scan (-sT) y no habra
+  deteccion de sistema operativo. Para el escaneo completo, arranca la consola
+  como administrador.
+</div>
+{% endif %}
+
+<div class="grid cols-4">
+  <div class="stat"><div class="value">{{ stats.scans }}</div><div class="label">Escaneos</div></div>
+  <div class="stat"><div class="value">{{ stats.hosts }}</div><div class="label">Hosts vivos</div></div>
+  <div class="stat"><div class="value">{{ stats.open_ports }}</div><div class="label">Puertos abiertos</div></div>
+  <div class="stat"><div class="value">{{ stats.running }}</div><div class="label">En curso</div></div>
+</div>
+
+<h2>Hallazgos acumulados</h2>
+<div class="grid cols-5">
+  {% for sev in severity_meta %}
+  <div class="stat sev-tile {{ sev.slug }}">
+    <div class="value">{{ stats.severities[sev.slug] }}</div>
+    <div class="label">{{ sev.label }}</div>
+  </div>
+  {% endfor %}
+</div>
+
+<h2>Historico</h2>
+<div class="card" style="padding:0">
+  {% if scans %}
+  <table>
+    <thead>
+      <tr>
+        <th>#</th><th>Nombre</th><th>Objetivo</th><th>Perfil</th>
+        <th>Estado</th><th class="num">Riesgo</th><th class="num">Hallazgos</th><th>Fecha</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for scan in scans %}
+      <tr>
+        <td class="mono">{{ scan.id }}</td>
+        <td><a href="/scans/{{ scan.id }}">{{ scan.name }}</a></td>
+        <td class="mono small">{{ scan.targets }}</td>
+        <td class="small muted">{{ scan.profile }}</td>
+        <td>
+          <span class="status {{ scan.status }}">{{ scan.status }}</span>
+          {% if scan.status == 'running' %}<span class="small muted">{{ scan.progress }}%</span>{% endif %}
+        </td>
+        <td class="num">{{ scan.risk_score }}</td>
+        <td class="num">
+          {{ scan.findings_relevantes }}
+          {% if scan.criticas %}<span class="badge critical">{{ scan.criticas }} crit.</span>{% endif %}
+        </td>
+        <td class="small muted">{{ scan.created_at[:16].replace('T', ' ') }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <div class="empty">Todavia no hay escaneos. <a href="/scans/new">Lanza el primero</a>.</div>
+  {% endif %}
+</div>
+{% endblock %}
+
+{% block scripts %}
+{% if stats.running %}
+<script>
+  // Hay escaneos en curso: refrescar para ver el progreso sin tocar nada.
+  setTimeout(function () { window.location.reload(); }, 8000);
+</script>
+{% endif %}
+{% endblock %}

@@ -1,0 +1,138 @@
+{% extends "base.html" %}
+{% block title %}Nuevo escaneo - Medscan{% endblock %}
+
+{% block content %}
+<h1>Nuevo escaneo</h1>
+<p class="lead">Escanea solo equipos propios o con autorizacion por escrito del responsable.</p>
+
+{% if error %}<div class="notice error">{{ error }}</div>{% endif %}
+{% if not env.ready %}
+<div class="notice error">nmap no esta disponible; el escaneo fallara hasta que lo instales.</div>
+{% endif %}
+
+<form class="stack card" method="post" action="/scans">
+  <label>
+    <span>Objetivo (IP, rango CIDR, rango de octetos o nombre de host)</span>
+    <input type="text" name="targets" id="targets" value="{{ targets }}"
+           placeholder="192.168.1.10   o   192.168.1.0/24   o   10.0.0.1-50" required autofocus>
+  </label>
+
+  <label>
+    <span>Perfil de escaneo</span>
+    <select name="profile" id="profile">
+      {% for key, profile in profiles.items() %}
+      <option value="{{ key }}" {{ 'selected' if key == default_profile }}>{{ profile.label }}</option>
+      {% endfor %}
+    </select>
+  </label>
+
+  <div class="notice small" id="profile-desc">
+    {{ profiles[default_profile].description }}
+  </div>
+
+  <div class="grid cols-2">
+    <label>
+      <span>Nombre del escaneo (opcional)</span>
+      <input type="text" name="name" placeholder="Auditoria servidor de pruebas">
+    </label>
+    <label>
+      <span>Autorizado por (opcional, queda en el informe)</span>
+      <input type="text" name="authorized_by" placeholder="Nombre y cargo de quien autoriza">
+    </label>
+  </div>
+
+  <label>
+    <span>Notas (opcional)</span>
+    <textarea name="notes" placeholder="Alcance acordado, ventana de mantenimiento, incidencias..."></textarea>
+  </label>
+
+  <div id="preview"></div>
+
+  <label class="inline">
+    <input type="checkbox" name="force" value="1">
+    <span>Permitir objetivos de mas de 256 hosts</span>
+  </label>
+
+  <label class="inline">
+    <input type="checkbox" name="authorized" value="1" required>
+    <span>Declaro que soy responsable del sistema objetivo o que tengo autorizacion
+      expresa para escanearlo.</span>
+  </label>
+
+  <div class="actions" style="margin-top:14px">
+    <button class="primary" type="submit">Lanzar escaneo</button>
+    <a class="btn" href="/">Cancelar</a>
+  </div>
+</form>
+
+<div class="card">
+  <h3>Perfiles disponibles</h3>
+  <table>
+    <tbody>
+    {% for key, profile in profiles.items() %}
+      <tr>
+        <td style="width:34%"><strong>{{ profile.label }}</strong><br><span class="mono small muted">{{ key }}</span></td>
+        <td class="small">{{ profile.description }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  const descriptions = {
+    {% for key, profile in profiles.items() %}
+    {{ key | tojson }}: {{ profile.description | tojson }}{{ "," if not loop.last }}
+    {% endfor %}
+  };
+  const profileSelect = document.getElementById("profile");
+  const descBox = document.getElementById("profile-desc");
+  const targetsInput = document.getElementById("targets");
+  const preview = document.getElementById("preview");
+
+  profileSelect.addEventListener("change", () => {
+    descBox.textContent = descriptions[profileSelect.value];
+    refreshPreview();
+  });
+
+  let timer = null;
+  function refreshPreview() {
+    clearTimeout(timer);
+    timer = setTimeout(async () => {
+      const targets = targetsInput.value.trim();
+      if (!targets) { preview.innerHTML = ""; return; }
+      const body = new FormData();
+      body.append("targets", targets);
+      body.append("profile", profileSelect.value);
+      try {
+        const res = await fetch("/api/preview", { method: "POST", body });
+        const data = await res.json();
+        if (!data.ok) {
+          preview.innerHTML = '<div class="notice error">' + escapeHtml(data.error) + '</div>';
+          return;
+        }
+        let html = '<div class="notice ok small"><strong>' + data.hosts +
+          ' host(s)</strong> - ' + (data.private ? 'rango privado' : 'fuera de rango privado') +
+          '<br><code>' + escapeHtml(data.command) + '</code></div>';
+        for (const w of data.warnings) {
+          html += '<div class="notice small">' + escapeHtml(w) + '</div>';
+        }
+        preview.innerHTML = html;
+      } catch (e) {
+        preview.innerHTML = "";
+      }
+    }, 350);
+  }
+
+  function escapeHtml(value) {
+    const div = document.createElement("div");
+    div.textContent = value;
+    return div.innerHTML;
+  }
+
+  targetsInput.addEventListener("input", refreshPreview);
+  if (targetsInput.value) refreshPreview();
+</script>
+{% endblock %}

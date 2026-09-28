@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+{% set active_nav = "findings" %}
+{% block title %}Hallazgos - Medscan{% endblock %}
+
+{% block content %}
+<h1>Hallazgos</h1>
+<p class="lead">Todo lo detectado en los escaneos, ordenado por severidad.</p>
+
+<div class="filters">
+  <a href="?min_severity=0" class="{{ 'active' if min_severity == 0 }}">Todos</a>
+  <a href="?min_severity=1" class="{{ 'active' if min_severity == 1 }}">Baja y superior</a>
+  <a href="?min_severity=2" class="{{ 'active' if min_severity == 2 }}">Media y superior</a>
+  <a href="?min_severity=3" class="{{ 'active' if min_severity == 3 }}">Alta y superior</a>
+  <a href="?min_severity=4" class="{{ 'active' if min_severity == 4 }}">Solo criticas</a>
+</div>
+
+<div class="card" style="padding:0">
+  {% if findings %}
+  <table>
+    <thead>
+      <tr><th style="width:95px">Severidad</th><th>Hallazgo</th><th style="width:180px">Ubicacion</th>
+          <th style="width:170px">Escaneo</th></tr>
+    </thead>
+    <tbody>
+      {% for f in findings %}
+      <tr>
+        <td><span class="badge {{ severity_slug(f.severity) }}">{{ severity_label(f.severity) }}</span></td>
+        <td>
+          {{ f.title }}
+          <span class="assessment {{ f.assessment }}">{{ assessment_label(f.assessment) }}</span>
+          {% if f.cvss %}<span class="muted small">CVSS {{ f.cvss }}</span>{% endif %}
+        </td>
+        <td class="mono small">{{ f.host }}{% if f.port %}:{{ f.port }}{% endif %}</td>
+        <td class="small"><a href="/scans/{{ f.scan_id }}">{{ f.scan_name }}</a></td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <div class="empty">No hay hallazgos en este nivel.</div>
+  {% endif %}
+</div>
+{% endblock %}

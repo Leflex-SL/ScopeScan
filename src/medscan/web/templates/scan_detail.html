@@ -1,0 +1,316 @@
+{% extends "base.html" %}
+{% block title %}Escaneo #{{ scan.id }} - Medscan{% endblock %}
+
+{% block content %}
+<h1>{{ scan.name }}</h1>
+<p class="lead mono">{{ scan.targets }} &middot; perfil {{ scan.profile }}</p>
+
+<div class="card">
+  <div class="actions" style="justify-content:space-between">
+    <div>
+      <span class="status {{ scan.status }}" id="status-badge">{{ scan.status }}</span>
+      <span class="muted small" id="status-task">{{ scan.progress_task }}</span>
+    </div>
+    <div class="actions">
+      {% if scan.status in ('running', 'queued') %}
+      <form method="post" action="/scans/{{ scan.id }}/cancel"><button class="danger">Cancelar</button></form>
+      {% else %}
+      <form method="post" action="/scans/{{ scan.id }}/rerun"><button>Repetir</button></form>
+      <a class="btn" href="/scans/{{ scan.id }}/report" target="_blank">Informe</a>
+      {% endif %}
+      <form method="post" action="/scans/{{ scan.id }}/delete"
+            onsubmit="return confirm('Se borrara el escaneo {{ scan.id }} y todos sus resultados. Continuar?')">
+        <button class="danger">Borrar</button>
+      </form>
+    </div>
+  </div>
+
+  {% if scan.status in ('running', 'queued') %}
+  <div class="progress"><div id="progress-bar" style="width: {{ scan.progress }}%"></div></div>
+  <div class="small muted"><span id="progress-pct">{{ scan.progress }}</span>% completado</div>
+  {% endif %}
+
+  {% if scan.error %}<div class="notice error" style="margin-top:12px">{{ scan.error }}</div>{% endif %}
+  {% if scan.status == 'done' %}
+  <div class="actions" style="margin-top:14px">
+    <form method="post" action="/scans/{{ scan.id }}/enrich/nvd">
+      <button type="submit" {{ 'disabled' if enrichment.get('nvd') and enrichment.nvd.status == 'running' }}>Buscar CVE candidatas en NVD</button>
+      {% if inventories.values() | selectattr('intel_me_firmware') | list %}
+      <label class="inline small"><input type="checkbox" name="include_firmware" value="1"> Enviar tambien la version de firmware Intel ME del inventario</label>
+      {% endif %}
+    </form>
+    <span class="small muted">Se envian los CPE detectados a NVD. El firmware autenticado solo se envia si marcas la casilla. Las coincidencias no confirman vulnerabilidad.</span>
+  </div>
+  {% if inventories.values() | rejectattr('platform', 'equalto', 'linux') | list %}
+  <div class="actions" style="margin-top:10px">
+    <form method="post" action="/scans/{{ scan.id }}/enrich/msrc">
+      <button type="submit" {{ 'disabled' if enrichment.get('msrc') and enrichment.msrc.status == 'running' }}>Evaluar parches Windows con MSRC</button>
+    </form>
+    <span class="small muted">Descarga el boletin mensual publico y compara producto, build y UBR. No envia el inventario a Microsoft.</span>
+  </div>
+  {% endif %}
+  {% for kind, job in enrichment.items() %}
+    <p class="small {{ 'muted' if job.status != 'failed' else '' }}">{{ {'nvd': 'NVD', 'windows': 'Inventario Windows', 'linux': 'Inventario Linux', 'msrc': 'Parches Microsoft MSRC', 'threat_intel': 'CISA KEV / EPSS'}.get(kind, kind) }}: {{ job.status }}{% if job.error %} — {{ job.error }}{% endif %}</p>
+  {% endfor %}
+  {% endif %}
+
+  <table style="margin-top:14px">
+    <tbody>
+      <tr><th style="width:170px">Riesgo agregado</th>
+          <td><span class="risk-dial">{{ scan.risk_score }}</span> <span class="muted small">/ 100</span></td></tr>
+      <tr><th>Hosts</th><td>{{ scan.hosts_up }} vivos de {{ scan.hosts_total }}</td></tr>
+      <tr><th>Duracion</th><td>{{ '%.1f'|format(scan.elapsed) }} s</td></tr>
+      <tr><th>Lanzado</th><td class="small">{{ scan.created_at[:16].replace('T', ' ') }} UTC</td></tr>
+      {% if scan.authorized_by %}<tr><th>Autorizado por</th><td>{{ scan.authorized_by }}</td></tr>{% endif %}
+      {% if scan.notes %}<tr><th>Notas</th><td class="small">{{ scan.notes }}</td></tr>{% endif %}
+      <tr><th>Comando</th><td><code class="small">{{ scan.nmap_args }}</code></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<div class="grid cols-5">
+  {% for sev in severity_meta %}
+  <div class="stat sev-tile {{ sev.slug }}">
+    <div class="value">{{ counts[sev.slug] }}</div>
+    <div class="label">{{ sev.label }}</div>
+  </div>
+  {% endfor %}
+</div>
+
+<h2>Hallazgos</h2>
+<div class="filters">
+  <a href="?min_severity=0" class="{{ 'active' if min_severity == 0 }}">Todos</a>
+  <a href="?min_severity=1" class="{{ 'active' if min_severity == 1 }}">Baja y superior</a>
+  <a href="?min_severity=2" class="{{ 'active' if min_severity == 2 }}">Media y superior</a>
+  <a href="?min_severity=3" class="{{ 'active' if min_severity == 3 }}">Alta y superior</a>
+  <a href="?min_severity=4" class="{{ 'active' if min_severity == 4 }}">Solo criticas</a>
+</div>
+
+{% if findings %}
+  {% for f in findings %}
+  <details class="finding">
+    <summary>
+      <span class="badge {{ severity_slug(f.severity) }}">{{ severity_label(f.severity) }}</span>
+      <span class="assessment {{ f.assessment }}">{{ assessment_label(f.assessment) }}</span>
+      <span class="title">{{ f.title }}</span>
+      <span class="loc mono">{{ f.host }}{% if f.port %}:{{ f.port }}/{{ f.protocol }}{% endif %}</span>
+    </summary>
+    <div class="body">
+      <p>{{ f.description }}</p>
+      {% if f.service %}<p class="small muted">Servicio: {{ f.service }}</p>{% endif %}
+      {% set cve_list = json.loads(f.cves or '[]') %}
+      {% if cve_list %}
+      <h4>CVE</h4>
+      <p class="small">
+        {% for cve in cve_list %}
+        <a href="https://nvd.nist.gov/vuln/detail/{{ cve }}" target="_blank" rel="noopener">{{ cve }}</a>{{ ", " if not loop.last }}
+        {% endfor %}
+        {% if f.cvss %}<span class="muted">(CVSS maximo {{ f.cvss }})</span>{% endif %}
+      </p>
+      {% endif %}
+      {% if f.remediation %}<h4>Remediacion</h4><p class="small">{{ f.remediation }}</p>{% endif %}
+      {% if f.evidence %}<h4>Evidencia</h4><pre class="evidence">{{ f.evidence }}</pre>{% endif %}
+      <p class="small muted">Origen: <code>{{ f.source }}</code></p>
+    </div>
+  </details>
+  {% endfor %}
+{% else %}
+  <div class="card empty">
+    {% if scan.status == 'done' %}Sin hallazgos en este nivel de severidad.
+    {% else %}Todavia no hay hallazgos.{% endif %}
+  </div>
+{% endif %}
+
+<h2>CVE candidatas por CPE</h2>
+<p class="small muted">Coincidencias de NVD por producto y version. El CVSS corresponde a la CVE, no al riesgo confirmado del equipo. Revisar configuracion y parches del fabricante.</p>
+{% if candidates %}
+<div class="card" style="padding:0">
+<table>
+  <thead><tr><th>Estado</th><th>CVE</th><th>Riesgo</th><th>Ubicacion</th><th>Evidencia</th></tr></thead>
+  <tbody>
+  {% for candidate in candidates %}
+  <tr>
+    <td><span class="assessment candidate">Posible afectacion</span></td>
+    <td><a href="https://nvd.nist.gov/vuln/detail/{{ candidate.cve_id }}" target="_blank" rel="noopener">{{ candidate.cve_id }}</a><br><span class="small muted">{{ candidate.summary[:160] }}</span></td>
+    <td>CVSS {{ candidate.cvss if candidate.cvss is not none else '-' }}{% if candidate.cvss_source %}<br><span class="small muted">{{ candidate.cvss_source }}</span>{% endif %}
+      {% if candidate.known_exploited %}<br><strong>Explotada según CISA KEV</strong>{% endif %}
+      {% if candidate.epss is not none %}<br>EPSS {{ '%.2f'|format(candidate.epss * 100) }}% <span class="small muted">(percentil {{ '%.1f'|format(candidate.epss_percentile * 100) }})</span>{% endif %}</td>
+    <td class="mono small">{{ candidate.host }}:{{ candidate.port }}/{{ candidate.protocol }}</td>
+    <td class="mono small">{{ candidate.detected_cpe }}<br>Consulta: {{ candidate.queried_cpe }}
+      <br><span class="muted">{{ nvd_match_note(candidate.match_type, candidate.requires_other_cpe) }}</span>
+      {% if candidate.cvss_vector %}<br><span class="muted">{{ candidate.cvss_vector }}</span>{% endif %}
+      {% if candidate.vendor_advisory %}<br><a href="{{ candidate.vendor_advisory }}" target="_blank" rel="noopener">Aviso del fabricante</a>{% endif %}</td>
+  </tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+{% else %}<p class="muted small">Sin coincidencias guardadas. La busqueda se ejecuta bajo demanda.</p>{% endif %}
+
+<h2>Actualizaciones Windows</h2>
+{% if patch_statuses %}
+{% for patch in patch_statuses %}
+<div class="card"><p><strong class="mono">{{ patch.host }}</strong> · {{ patch.product_name }}</p>
+<p class="small">Build instalado <strong>{{ patch.installed_build }}</strong>; requerido por {{ patch.release_id }}: <strong>{{ patch.required_build }}</strong>{% if patch.required_kb %} (KB{{ patch.required_kb }}){% endif %}.
+Estado: <span class="status {{ 'done' if patch.status == 'current' else 'failed' if patch.status == 'outdated' else 'cancelled' }}">{{ {'current':'vigente','outdated':'desactualizado','partial':'parcial'}[patch.status] }}</span>{% if patch.unresolved %}; {{ patch.unresolved }} entradas sin build evaluable{% endif %}.</p></div>
+{% endfor %}
+{% if patch_candidates %}<div class="table-wrap"><table>
+<thead><tr><th>CVE pendiente</th><th>CVSS</th><th>Build corregido</th><th>Actualizacion</th></tr></thead><tbody>
+{% for item in patch_candidates %}<tr>
+<td><a href="https://msrc.microsoft.com/update-guide/vulnerability/{{ item.cve_id }}" target="_blank" rel="noopener">{{ item.cve_id }}</a><br><span class="small muted">{{ item.title }}</span></td>
+<td>{{ item.cvss if item.cvss is not none else '-' }}{% if item.cvss_vector %}<br><span class="small muted mono">{{ item.cvss_vector }}</span>{% endif %}</td>
+<td class="mono">{{ item.fixed_build }}<br><span class="muted">instalado {{ item.installed_build }}</span></td>
+<td>{% if item.url %}<a href="{{ item.url }}" target="_blank" rel="noopener">KB{{ item.kb }}</a>{% else %}KB{{ item.kb or '-' }}{% endif %}</td>
+</tr>{% endfor %}</tbody></table></div>{% endif %}
+{% else %}<p class="muted small">Sin evaluacion MSRC guardada.</p>{% endif %}
+
+<h2>Controles autenticados</h2>
+{% if controls %}
+{% set summary = namespace(pass_count=0, fail_count=0, unknown_count=0, na_count=0) %}
+{% for item in controls %}
+  {% if item.status == 'pass' %}{% set summary.pass_count = summary.pass_count + 1 %}
+  {% elif item.status == 'fail' %}{% set summary.fail_count = summary.fail_count + 1 %}
+  {% elif item.status == 'unknown' %}{% set summary.unknown_count = summary.unknown_count + 1 %}
+  {% else %}{% set summary.na_count = summary.na_count + 1 %}{% endif %}
+{% endfor %}
+<p class="small"><strong>{{ summary.pass_count }} cumplen</strong> · {{ summary.fail_count }} fallan · {{ summary.unknown_count }} sin datos · {{ summary.na_count }} no aplican.</p>
+<p class="small muted">Resultados tecnicos puntuales; no constituyen una certificacion CIS ni ENS.</p>
+<div class="table-wrap"><table>
+  <thead><tr><th>Host</th><th>Control</th><th>Estado</th><th>Evidencia y referencias</th></tr></thead>
+  <tbody>{% for item in controls %}<tr>
+    <td class="mono">{{ item.host }}</td>
+    <td><strong>{{ item.control_id }}</strong><br><span class="small">{{ item.title }}</span></td>
+    <td><span class="status {{ 'done' if item.status == 'pass' else 'failed' if item.status == 'fail' else 'cancelled' }}">{{ {'pass':'cumple','fail':'falla','unknown':'sin datos','not_applicable':'no aplica'}[item.status] }}</span></td>
+    <td class="small">{{ item.evidence }}{% set refs = json.loads(item.references_json) %}{% if refs %}<br><span class="muted">{{ refs|join(' · ') }}</span>{% endif %}</td>
+  </tr>{% endfor %}</tbody>
+</table></div>
+{% else %}<p class="muted small">Ejecuta un inventario autenticado para evaluar controles locales.</p>{% endif %}
+
+<h2>Hosts y puertos</h2>
+{% for host, ports in hosts %}
+<div class="card">
+  <h3 class="mono">
+    {{ host.address }}
+    {% set names = json.loads(host.hostnames or '[]') %}
+    {% if names %}<span class="muted small">({{ names|join(', ') }})</span>{% endif %}
+    <span class="status {{ 'done' if host.state == 'up' else 'cancelled' }}">{{ host.state }}</span>
+  </h3>
+  <p class="small muted">
+    {% if host.os_name %}SO probable: {{ host.os_name }} ({{ host.os_accuracy }}% de certeza).{% endif %}
+    {% if host.mac %} MAC {{ host.mac }} {{ host.vendor }}.{% endif %}
+    {% set extra = json.loads(host.extraports or '{}') %}
+    {% for state, count in extra.items() %} {{ count }} puertos {{ state }}.{% endfor %}
+  </p>
+  {% if scan.status == 'done' and host.state == 'up' %}
+  <form method="post" action="/scans/{{ scan.id }}/inventory/windows" class="actions">
+    <input type="hidden" name="host" value="{{ host.address }}">
+    <button type="submit" {{ 'disabled' if enrichment.get('windows') and enrichment.windows.status == 'running' }}>Inventario Windows autenticado</button>
+    {% if host.address in ('127.0.0.1', '::1') %}<label class="inline small"><input type="checkbox" name="local" value="1"> Este es el equipo local</label>{% endif %}
+  </form>
+  <p class="small muted">Usa la identidad Windows actual por WinRM; no se guardan credenciales.</p>
+  <form method="post" action="/scans/{{ scan.id }}/inventory/linux" class="actions">
+    <input type="hidden" name="host" value="{{ host.address }}">
+    <input name="user" size="14" maxlength="64" placeholder="usuario SSH">
+    <input name="port" type="number" min="1" max="65535" value="22" style="width:85px">
+    <button type="submit" {{ 'disabled' if enrichment.get('linux') and enrichment.linux.status == 'running' }}>Inventario Linux autenticado</button>
+    {% if host.address in ('127.0.0.1', '::1') %}<label class="inline small"><input type="checkbox" name="local" value="1"> Este es el equipo local</label>{% endif %}
+  </form>
+  <p class="small muted">Usa claves o agente OpenSSH en modo no interactivo; no se guardan credenciales.</p>
+  {% endif %}
+  {% if inventories.get(host.address) %}
+    {% set inv = inventories[host.address] %}
+    {% if inv.platform == 'linux' %}
+    <p class="small"><strong>Inventario Linux autenticado:</strong> {{ inv.os_name }} {{ inv.os_version }}; kernel {{ inv.kernel }}. {{ inv.packages|length }} paquetes registrados; {% if inv.security_updates_checked %}{{ inv.security_updates|length }} actualizaciones de seguridad pendientes{% else %}actualizaciones de seguridad sin evaluar{% endif %}.</p>
+    {% if inv.sshd %}<p class="small">SSH: root {{ inv.sshd.permit_root_login or 'sin dato' }}; autenticacion por contrasena {{ inv.sshd.password_authentication or 'sin dato' }}.</p>{% endif %}
+    <p class="small">Firewall {{ 'activo' if inv.firewall.active is sameas true else 'inactivo' if inv.firewall.active is sameas false else 'sin dato' }}; ASLR {{ inv.aslr if inv.aslr is not none else 'sin dato' }}; SELinux {{ inv.selinux or 'sin dato' }}; AppArmor {{ inv.apparmor or 'sin dato' }}.</p>
+    <details><summary>Ver paquetes instalados</summary><table><thead><tr><th>Paquete</th><th>Version</th></tr></thead><tbody>
+      {% for item in inv.packages %}<tr><td>{{ item.name }}</td><td>{{ item.version }}</td></tr>{% endfor %}
+    </tbody></table></details>
+    {% else %}
+    <p class="small"><strong>Inventario autenticado:</strong> {{ inv.os_name }} {{ inv.os_version }} (build {{ inv.os_build }}{% if inv.ubr is not none %}.{{ inv.ubr }}{% endif %}).
+      BIOS {{ inv.bios_version or 'sin dato' }}. Intel ME {{ inv.intel_me_firmware or 'sin dato' }}.
+      {{ inv.updates|length }} KB y {{ inv.software|length }} aplicaciones registradas.</p>
+    {% if inv.smb_server %}<p class="small">Servidor SMB: SMBv1
+      {{ 'habilitado' if inv.smb_server.smb1_enabled is sameas true else 'deshabilitado' if inv.smb_server.smb1_enabled is sameas false else 'sin dato' }};
+      firma {{ 'obligatoria' if inv.smb_server.signing_required is sameas true else 'no obligatoria' if inv.smb_server.signing_required is sameas false else 'sin dato' }}.</p>{% endif %}
+    {% if inv.rdp %}<p class="small">RDP: NLA
+      {{ 'obligatoria' if inv.rdp.nla_required is sameas true else 'no obligatoria' if inv.rdp.nla_required is sameas false else 'sin dato' }}.</p>{% endif %}
+    {% if inv.firewall_profiles %}<p class="small">Firewall:
+      {% for profile in inv.firewall_profiles %}{{ profile.name }} {{ 'activo' if profile.active else 'inactivo' }}/{{ 'habilitado' if profile.enabled else 'deshabilitado' }}{{ ', ' if not loop.last }}{% endfor %}.</p>{% endif %}
+    {% if inv.defender %}<p class="small">Defender: tiempo real {{ 'activo' if inv.defender.realtime_enabled else 'deshabilitado' }}; firmas de hace {{ inv.defender.signature_age_days }} dias.</p>{% endif %}
+    <p class="small">UAC {{ 'habilitado' if inv.uac_enabled is sameas true else 'deshabilitado' if inv.uac_enabled is sameas false else 'sin dato' }}{% if inv.bitlocker %}; BitLocker {{ inv.bitlocker.protection_status }} en {{ inv.bitlocker.mount_point }}{% endif %}; Secure Boot {{ 'habilitado' if inv.secure_boot_enabled is sameas true else 'deshabilitado' if inv.secure_boot_enabled is sameas false else 'sin dato' }}{% if inv.guest_account %}; Guest {{ 'habilitada' if inv.guest_account.enabled else 'deshabilitada' }}{% endif %}.</p>
+    {% if inv.intel_me_note %}<p class="small muted">{{ inv.intel_me_note }}</p>{% endif %}
+    {% if inv.updates_note %}<p class="small muted">Parches: {{ inv.updates_note }}</p>{% endif %}
+    <details><summary>Ver KB y software instalado</summary>
+      <p class="small mono">KB: {{ inv.updates | map(attribute='kb') | join(', ') or 'sin datos' }}</p>
+      <table><thead><tr><th>Aplicacion</th><th>Version</th><th>Fabricante</th></tr></thead><tbody>
+      {% for item in inv.software %}<tr><td>{{ item.name }}</td><td>{{ item.version }}</td><td>{{ item.publisher }}</td></tr>{% endfor %}
+      </tbody></table>
+    </details>
+    {% endif %}
+  {% endif %}
+
+  {% if ports %}
+  <table>
+    <thead><tr><th style="width:90px">Puerto</th><th style="width:130px">Servicio</th><th>Version</th><th>Scripts</th></tr></thead>
+    <tbody>
+      {% for port in ports %}
+      <tr>
+        <td class="mono">{{ port.portid }}/{{ port.protocol }}</td>
+        <td>{{ port.service_name or '-' }}</td>
+        <td class="small">
+          {{ port.product }} {{ port.version }}
+          {% if port.extrainfo %}<span class="muted">({{ port.extrainfo }})</span>{% endif %}
+        </td>
+        <td>
+          {% set scripts = json.loads(port.scripts or '[]') %}
+          {% if scripts %}
+            {% for script in scripts %}
+            <details>
+              <summary class="small mono">{{ script.id }}</summary>
+              <pre class="evidence">{{ script.output }}</pre>
+            </details>
+            {% endfor %}
+          {% else %}<span class="muted small">-</span>{% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="muted small">Sin puertos abiertos detectados.</p>
+  {% endif %}
+</div>
+{% else %}
+<div class="card empty">Sin hosts registrados todavia.</div>
+{% endfor %}
+{% endblock %}
+
+{% block scripts %}
+{% if scan.status in ('running', 'queued') or (enrichment.get('nvd') and enrichment.nvd.status == 'running') or (enrichment.get('windows') and enrichment.windows.status == 'running') or (enrichment.get('linux') and enrichment.linux.status == 'running') or (enrichment.get('msrc') and enrichment.msrc.status == 'running') %}
+<script>
+  // Sondeo del estado mientras el escaneo corre. Cuando termina, se recarga
+  // una vez para pintar los resultados completos.
+  const scanId = {{ scan.id }};
+  async function poll() {
+    try {
+      const res = await fetch(`/api/scans/${scanId}/status`);
+      const data = await res.json();
+      if (document.getElementById("progress-bar")) {
+        document.getElementById("progress-bar").style.width = data.progress + "%";
+        document.getElementById("progress-pct").textContent = data.progress;
+      }
+      document.getElementById("status-task").textContent = data.task || "";
+      document.getElementById("status-badge").textContent = data.status;
+      if (data.status !== "running" && data.status !== "queued" &&
+          !Object.values(data.enrichment).includes("running")) {
+        window.location.reload();
+        return;
+      }
+    } catch (e) { /* el servidor puede estar ocupado; se reintenta */ }
+    setTimeout(poll, 3000);
+  }
+  poll();
+</script>
+{% endif %}
+{% endblock %}

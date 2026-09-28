@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}Medscan{% endblock %}</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>&#128737;</text></svg>">
+</head>
+<body>
+  <header class="top">
+    <div class="brand">MED<span>SCAN</span></div>
+    <nav>
+      <a href="/" class="{{ 'active' if active_nav == 'dashboard' }}">Escaneos</a>
+      <a href="/findings" class="{{ 'active' if active_nav == 'findings' }}">Hallazgos</a>
+    </nav>
+    <div class="spacer"></div>
+    <a class="btn primary" href="/scans/new">Nuevo escaneo</a>
+  </header>
+  <main>
+    {% block content %}{% endblock %}
+  </main>
+  {% block scripts %}{% endblock %}
+</body>
+</html>

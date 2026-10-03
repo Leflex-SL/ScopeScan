@@ -191,9 +191,59 @@ CREATE TABLE IF NOT EXISTS windows_patch_candidates (
     PRIMARY KEY (scan_id, host, cve_id)
 );
 
+CREATE TABLE IF NOT EXISTS msf_results (
+    scan_id      INTEGER NOT NULL REFERENCES scans(id) ON DELETE CASCADE,
+    host         TEXT NOT NULL,
+    port         INTEGER,
+    protocol     TEXT NOT NULL DEFAULT 'tcp',
+    module       TEXT NOT NULL,
+    module_kind  TEXT NOT NULL,
+    action       TEXT NOT NULL,
+    result       TEXT NOT NULL,
+    detail       TEXT NOT NULL DEFAULT '',
+    checked_at   TEXT NOT NULL,
+    PRIMARY KEY (scan_id, host, port, module)
+);
+
+CREATE TABLE IF NOT EXISTS exploitdb_results (
+    scan_id      INTEGER NOT NULL REFERENCES scans(id) ON DELETE CASCADE,
+    cve_id       TEXT NOT NULL,
+    edb_id       TEXT NOT NULL,
+    title        TEXT NOT NULL,
+    type         TEXT NOT NULL DEFAULT '',
+    platform     TEXT NOT NULL DEFAULT '',
+    path         TEXT NOT NULL DEFAULT '',
+    date         TEXT NOT NULL DEFAULT '',
+    url          TEXT NOT NULL DEFAULT '',
+    context_score INTEGER NOT NULL DEFAULT 0,
+    matched_context TEXT NOT NULL DEFAULT '',
+    checked_at   TEXT NOT NULL,
+    PRIMARY KEY (scan_id, cve_id, edb_id)
+);
+
+CREATE TABLE IF NOT EXISTS exploit_runs (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    scan_id       INTEGER NOT NULL REFERENCES scans(id) ON DELETE CASCADE,
+    host          TEXT NOT NULL,
+    port          INTEGER,
+    protocol      TEXT NOT NULL DEFAULT 'tcp',
+    engine        TEXT NOT NULL,
+    module        TEXT NOT NULL,
+    action        TEXT NOT NULL,
+    status        TEXT NOT NULL,
+    result        TEXT NOT NULL DEFAULT '',
+    detail        TEXT NOT NULL DEFAULT '',
+    rc_path       TEXT NOT NULL DEFAULT '',
+    log_path      TEXT NOT NULL DEFAULT '',
+    authorized_by TEXT NOT NULL DEFAULT '',
+    started_at    TEXT NOT NULL,
+    finished_at   TEXT
+);
+
 CREATE INDEX IF NOT EXISTS idx_hosts_scan ON hosts(scan_id);
 CREATE INDEX IF NOT EXISTS idx_ports_host ON ports(host_id);
 CREATE INDEX IF NOT EXISTS idx_findings_scan ON findings(scan_id, severity DESC);
+CREATE INDEX IF NOT EXISTS idx_exploit_runs_scan ON exploit_runs(scan_id, started_at DESC);
 """
 
 
@@ -248,6 +298,39 @@ def init_db(path: Path | None = None) -> None:
         ):
             if column not in candidate_columns:
                 conn.execute(f"ALTER TABLE cve_candidates ADD COLUMN {column} {declaration}")
+        exploitdb_columns = {
+            row["name"] for row in conn.execute("PRAGMA table_info(exploitdb_results)")
+        }
+        for column, declaration in (
+            ("context_score", "INTEGER NOT NULL DEFAULT 0"),
+            ("matched_context", "TEXT NOT NULL DEFAULT ''"),
+        ):
+            if column not in exploitdb_columns:
+                conn.execute(f"ALTER TABLE exploitdb_results ADD COLUMN {column} {declaration}")
+        if not list(conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='exploit_runs'"
+        )):
+            conn.executescript("""
+CREATE TABLE exploit_runs (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    scan_id       INTEGER NOT NULL REFERENCES scans(id) ON DELETE CASCADE,
+    host          TEXT NOT NULL,
+    port          INTEGER,
+    protocol      TEXT NOT NULL DEFAULT 'tcp',
+    engine        TEXT NOT NULL,
+    module        TEXT NOT NULL,
+    action        TEXT NOT NULL,
+    status        TEXT NOT NULL,
+    result        TEXT NOT NULL DEFAULT '',
+    detail        TEXT NOT NULL DEFAULT '',
+    rc_path       TEXT NOT NULL DEFAULT '',
+    log_path      TEXT NOT NULL DEFAULT '',
+    authorized_by TEXT NOT NULL DEFAULT '',
+    started_at    TEXT NOT NULL,
+    finished_at   TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_exploit_runs_scan ON exploit_runs(scan_id, started_at DESC);
+""")
 
 
 def create_scan(
@@ -488,8 +571,137 @@ def recent_findings(limit: int = 100, min_severity: int = int(Severity.LOW)) -> 
         )
 
 
+def save_msf_results(scan_id: int, rows: list[dict[str, Any]]) -> int:
+    """Guarda (o reemplaza) los veredictos de Metasploit de un escaneo.
+
+    Clave (scan_id, host, port, module): relanzar la verificacion actualiza el
+    veredicto en vez de duplicarlo.
+    """
+    stamp = now()
+    with connect() as conn:
+        for r in rows:
+            conn.execute(
+                """INSERT INTO msf_results
+                     (scan_id, host, port, protocol, module, module_kind, action,
+                      result, detail, checked_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(scan_id, host, port, module) DO UPDATE SET
+                     module_kind=excluded.module_kind, action=excluded.action,
+                     result=excluded.result, detail=excluded.detail,
+                     checked_at=excluded.checked_at""",
+                (
+                    scan_id, r["host"], r.get("port"), r.get("protocol", "tcp"),
+                    r["module"], r["module_kind"], r["action"],
+                    r["result"], r.get("detail", ""), stamp,
+                ),
+            )
+    return len(rows)
+
+
+def get_msf_results(scan_id: int) -> list[sqlite3.Row]:
+    with connect() as conn:
+        return list(
+            conn.execute(
+                """SELECT * FROM msf_results WHERE scan_id = ?
+                   ORDER BY host, port, module""",
+                (scan_id,),
+            )
+        )
+
+
+def replace_exploitdb_results(scan_id: int, rows: list[dict[str, Any]]) -> int:
+    stamp = now()
+    with connect() as conn:
+        conn.execute("DELETE FROM exploitdb_results WHERE scan_id = ?", (scan_id,))
+        conn.executemany(
+            """INSERT INTO exploitdb_results
+                 (scan_id, cve_id, edb_id, title, type, platform, path, date, url,
+                  context_score, matched_context, checked_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            [
+                (
+                    scan_id, row["cve_id"], row["edb_id"], row["title"],
+                    row.get("type", ""), row.get("platform", ""), row.get("path", ""),
+                    row.get("date", ""), row.get("url", ""),
+                    int(row.get("context_score", 0) or 0), row.get("matched_context", ""),
+                    stamp,
+                )
+                for row in rows
+            ],
+        )
+    return len(rows)
+
+
+def get_exploitdb_results(scan_id: int) -> list[sqlite3.Row]:
+    with connect() as conn:
+        return list(
+            conn.execute(
+                """SELECT * FROM exploitdb_results WHERE scan_id = ?
+                   ORDER BY context_score DESC, cve_id, type, platform, title""",
+                (scan_id,),
+            )
+        )
+
+
+def create_exploit_run(
+    scan_id: int,
+    *,
+    host: str,
+    port: int | None,
+    protocol: str = "tcp",
+    engine: str,
+    module: str,
+    action: str,
+    rc_path: str = "",
+    log_path: str = "",
+    authorized_by: str = "",
+) -> int:
+    with connect() as conn:
+        cur = conn.execute(
+            """INSERT INTO exploit_runs
+                 (scan_id, host, port, protocol, engine, module, action, status,
+                  rc_path, log_path, authorized_by, started_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, 'running', ?, ?, ?, ?)""",
+            (
+                scan_id, host, port, protocol, engine, module, action,
+                rc_path, log_path, authorized_by, now(),
+            ),
+        )
+        return int(cur.lastrowid)
+
+
+def finish_exploit_run(
+    run_id: int,
+    *,
+    status: str,
+    result: str = "",
+    detail: str = "",
+) -> None:
+    with connect() as conn:
+        conn.execute(
+            """UPDATE exploit_runs
+                  SET status = ?, result = ?, detail = ?, finished_at = ?
+                WHERE id = ?""",
+            (status, result, detail, now(), run_id),
+        )
+
+
+def get_exploit_runs(scan_id: int) -> list[sqlite3.Row]:
+    with connect() as conn:
+        return list(
+            conn.execute(
+                """SELECT * FROM exploit_runs WHERE scan_id = ?
+                   ORDER BY started_at DESC, id DESC""",
+                (scan_id,),
+            )
+        )
+
+
 def delete_scan(scan_id: int) -> None:
     with connect() as conn:
+        conn.execute("DELETE FROM exploit_runs WHERE scan_id = ?", (scan_id,))
+        conn.execute("DELETE FROM msf_results WHERE scan_id = ?", (scan_id,))
+        conn.execute("DELETE FROM exploitdb_results WHERE scan_id = ?", (scan_id,))
         conn.execute("DELETE FROM enrichment_jobs WHERE scan_id = ?", (scan_id,))
         conn.execute("DELETE FROM cve_candidates WHERE scan_id = ?", (scan_id,))
         conn.execute("DELETE FROM host_inventory WHERE scan_id = ?", (scan_id,))

@@ -55,6 +55,7 @@ Comprueba que todo está en su sitio:
 
 ```bash
 .venv\Scripts\medscan.exe doctor
+.venv\Scripts\medscan.exe self-test
 ```
 
 ## Uso
@@ -67,9 +68,11 @@ Comprueba que todo está en su sitio:
 
 Abre <http://127.0.0.1:8000>. Desde ahí se lanzan escaneos, se sigue el progreso
 en vivo (nmap reporta el porcentaje cada 5 segundos), se filtran los hallazgos
-por severidad y se exporta el informe.
+por severidad y se exporta el informe HTML, JSON completo o CSV de hallazgos.
 El panel solo acepta conexiones locales porque muestra inventarios autenticados
-y no tiene un sistema de inicio de sesión.
+y no tiene un sistema de inicio de sesión. Las acciones que cambian estado
+rechazan formularios enviados desde otro origen cuando el navegador incluye
+`Origin` o `Referer`.
 
 ### Línea de comandos
 
@@ -79,14 +82,60 @@ medscan scan 192.168.1.0/24 -p descubrimiento      # solo qué hosts están vivo
 medscan scan 10.0.0.5 -p completo -r informe.html  # 65535 puertos + informe
 medscan list                                       # histórico
 medscan show 3                                     # resultado de un escaneo
+medscan self-test                                  # chequeo local sin nmap ni red
 medscan report 3 -o auditoria.html                 # informe de uno ya hecho
+medscan export 3 -f json -o auditoria.json         # datos completos para automatizar
+medscan export 3 -f csv -o hallazgos.csv           # hallazgos para hoja de calculo
+medscan export 3 -f bundle -o entrega.zip          # HTML + JSON + CSV + artefactos MSF
 medscan enrich 3                                   # CVE candidatas por CPE en NVD
+medscan exploitdb 3                                # PoC publicas por CVE via SearchSploit
+medscan msf 3                                      # verificacion Metasploit (scanner/check)
+medscan msf-catalog                                # modulos MSF allowlistados y guardas
+medscan msf-rc 3 --host 192.168.1.10 --port 445 \
+  --module exploit/windows/smb/ms17_010_eternalblue # prepara .rc para msfconsole
 medscan inventory 3 --host 10.0.0.5                # inventario remoto Windows por WinRM
 medscan inventory 3 --host 10.0.0.5 --local        # si Medscan corre en ese equipo
 medscan inventory-linux 3 --host 10.0.0.8 --user audit  # claves o agente OpenSSH
 medscan patches 3                                  # build Windows frente a MSRC
 medscan profiles                                   # ver los perfiles disponibles
 ```
+
+### Integraciones opcionales
+
+Metasploit y Exploit-DB son opcionales. Si estan instalados, `medscan doctor`
+los detecta; si no, el panel deshabilita sus botones sin impedir escanear.
+
+Variables utiles:
+
+| Variable | Uso |
+|---|---|
+| `MEDSCAN_MSFCONSOLE` | Ruta a `msfconsole` si no esta en `PATH` |
+| `MEDSCAN_ENABLE_EXPLOIT` | `1` habilita el disparo directo de exploits desde el panel; por defecto solo `.rc` |
+| `MEDSCAN_LHOST` | IP local que recibira el payload reverse de Metasploit |
+| `MEDSCAN_LPORT` | Puerto local del payload reverse; por defecto `4444` |
+| `MEDSCAN_SEARCHSPLOIT` | Ruta a `searchsploit` si no esta en `PATH` |
+| `MEDSCAN_PANEL_USER` / `MEDSCAN_PANEL_PASSWORD` | Basic Auth opcional para permitir clientes no locales |
+
+La integracion Exploit-DB solo guarda referencias de SearchSploit. No descarga
+ni ejecuta PoC; calcula una relevancia contextual por puerto, servicio y
+producto para separar una PoC generica de una que encaja con lo observado. Para la fase ofensiva controlada, medscan puede preparar un
+resource script de Metasploit (`.rc`) descargable desde el panel o por CLI
+(`medscan msf-rc`) despues de una verificacion vulnerable/probable. El operador
+lo lanza manualmente con su `msfconsole`. `medscan msf-catalog` muestra el
+catalogo allowlistado de modulos y sus guardas. La explotacion directa desde el panel
+queda separada, registrada, exige confirmacion explicita y ademas requiere
+`MEDSCAN_ENABLE_EXPLOIT=1`.
+
+El panel sigue limitado a loopback por defecto. Si necesitas servirlo a otro
+equipo de un laboratorio, configura `MEDSCAN_PANEL_USER` y
+`MEDSCAN_PANEL_PASSWORD`; los clientes no locales deberan autenticarse con Basic
+Auth. Sin esas variables, las conexiones remotas se rechazan aunque el servidor
+escuche en `0.0.0.0`.
+
+El bundle ZIP incluye informe, JSON, CSV y artefactos MSF generados por Medscan.
+Para evitar entregables enormes por logs de consola, cada artefacto MSF se
+incluye completo hasta 2 MB; si supera ese tamaño, el ZIP conserva el inicio del
+fichero y añade una nota de truncado dentro del propio artefacto.
 
 ## Perfiles
 
@@ -288,11 +337,14 @@ o encargos con alcance firmado.
 ```bash
 .venv\Scripts\python.exe -m pytest        # pruebas sin red ni nmap
 .venv\Scripts\python.exe -m ruff check src tests
+.venv\Scripts\medscan.exe self-test       # sanity check local sin tocar la red
 ```
 
 Las pruebas no lanzan nmap ni tocan la red: trabajan sobre un XML de ejemplo
 realista (`tests/conftest.py`) y aíslan la base de datos en un directorio
-temporal vía `MEDSCAN_DATA`.
+temporal vía `MEDSCAN_DATA`. `pytest` usa `src` como `pythonpath` y escribe sus
+temporales en `.pytest_tmp/`, que esta ignorado por git para evitar problemas con
+el directorio temporal del usuario en Windows.
 
 ## Estructura
 
@@ -308,6 +360,11 @@ src/medscan/
   analysis.py      NSE -> hallazgos con severidad y tipo de evidencia
   nvd.py           CPE -> CVE candidatas con caché
   threat_intel.py  CISA KEV y FIRST EPSS para priorizar candidatas
+  exploitdb.py     CVE detectadas -> referencias Exploit-DB/SearchSploit
+  msf_modules.py   catalogo Metasploit servicio/CVE -> scanner/check/exploit
+  msf_runner.py    ejecucion de msfconsole con resource scripts y logs
+  msf.py           verificacion y explotacion Metasploit con guardas
+  attack_paths.py  vista consolidada host/puerto/CVE/PoC/MSF/ejecuciones
   msrc.py          build Windows -> CVE y KB pendientes en CVRF oficial
   windows_inventory.py  inventario Windows por WinRM o local
   linux_inventory.py  inventario Linux por OpenSSH o local
@@ -317,6 +374,7 @@ src/medscan/
   service.py       orquestación de un escaneo completo
   jobs.py          cola en segundo plano
   report.py        informe HTML autocontenido
-  cli.py           scan | serve | list | report | enrich | inventory | inventory-linux | patches
+  export.py        JSON, CSV y bundle ZIP de entrega
+  cli.py           scan | serve | list | report | export | enrich | exploitdb | msf | msf-catalog | msf-rc | inventory | patches | self-test
   web/             panel FastAPI + plantillas Jinja
 ```

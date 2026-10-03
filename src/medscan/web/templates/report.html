@@ -100,6 +100,26 @@ alta o critica:</p>
   Un resultado limpio no demuestra que el sistema sea seguro.
 </div>
 
+<h2>Attack Path</h2>
+<p class="small muted">Resumen operativo por host y puerto, cruzando hallazgos, CVE, PoC publicas, Metasploit y ejecuciones.</p>
+{% if attack_paths %}
+<table><thead><tr><th>Prioridad</th><th>Objetivo</th><th>Estado</th><th>Evidencia</th><th>Accion</th></tr></thead><tbody>
+{% for path in attack_paths[:10] %}
+<tr>
+<td><strong>{{ path.score }}</strong><br><span class="badge {{ path.max_severity_slug }}">{{ severity_label(path.max_severity) }}</span></td>
+<td class="mono">{{ path.host }}{% if path.port %}:{{ path.port }}/{{ path.protocol }}{% endif %}<br><span class="muted">{{ path.service or '-' }} {{ path.product or '' }}</span></td>
+<td>{{ path.state }}{% if path.best_msf %}<br><span class="small muted">MSF: {{ path.best_msf.result }}</span>{% endif %}
+{% if path.best_poc %}<br><span class="small muted">PoC score: {{ path.best_poc.context_score }}</span>{% endif %}
+{% if path.public_scope %}<br><strong>Expuesto</strong>{% endif %}</td>
+<td class="small">{% if path.cves %}{{ path.cves|join(', ') }}<br>{% endif %}
+{{ path.findings|length }} hallazgo(s), {{ path.candidates|length }} candidata(s),
+{{ path.exploitdb|length }} PoC, {{ path.msf|length }} veredicto(s), {{ path.exploit_runs|length }} ejecucion(es).</td>
+<td class="small">{{ path.recommendation }}</td>
+</tr>
+{% endfor %}
+</tbody></table>
+{% else %}<p class="muted small">Sin ruta de ataque construida.</p>{% endif %}
+
 <h2>Detalle de hallazgos</h2>
 {% for f in findings %}
 <div class="finding">
@@ -142,6 +162,37 @@ alta o critica:</p>
 {% endfor %}
 </tbody></table>
 {% else %}<p class="muted small">Sin coincidencias guardadas.</p>{% endif %}
+
+<h2>PoC publicas en Exploit-DB</h2>
+<p class="small muted">Referencias de SearchSploit por CVE; no implican explotacion ejecutada.</p>
+{% if exploitdb_results %}
+<table><thead><tr><th>CVE</th><th>Exploit-DB</th><th>Relevancia</th><th>Tipo</th><th>Plataforma</th></tr></thead><tbody>
+{% for item in exploitdb_results %}
+<tr>
+<td><a href="https://nvd.nist.gov/vuln/detail/{{ item.cve_id }}">{{ item.cve_id }}</a></td>
+<td>{% if item.url %}<a href="{{ item.url }}">{{ item.title }}</a>{% else %}{{ item.title }}{% endif %}<br><span class="small muted">EDB-ID {{ item.edb_id }}{% if item.date %} · {{ item.date }}{% endif %}</span></td>
+<td>{{ item.context_score }}<br><span class="small muted">{{ item.matched_context or '-' }}</span></td>
+<td>{{ item.type or '-' }}</td>
+<td>{{ item.platform or '-' }}</td>
+</tr>
+{% endfor %}
+</tbody></table>
+{% else %}<p class="muted small">Sin coincidencias Exploit-DB guardadas.</p>{% endif %}
+
+<h2>Ejecuciones de explotacion</h2>
+<p class="small muted">Historial de acciones de explotacion lanzadas desde Medscan. La verificacion Metasploit queda separada.</p>
+{% if exploit_runs %}
+<table><thead><tr><th>Resultado</th><th>Objetivo</th><th>Modulo</th><th>Evidencia</th></tr></thead><tbody>
+{% for run in exploit_runs %}
+<tr>
+<td>{{ run.result or run.status }}<br><span class="small muted">{{ run.status }}</span></td>
+<td class="mono">{{ run.host }}{% if run.port %}:{{ run.port }}/{{ run.protocol }}{% endif %}</td>
+<td class="small">{{ run.module }}<br><span class="muted">{{ run.engine }} · {{ run.action }}</span></td>
+<td><pre>{{ run.detail or 'Sin detalle guardado.' }}</pre></td>
+</tr>
+{% endfor %}
+</tbody></table>
+{% else %}<p class="muted small">Sin ejecuciones de explotacion registradas.</p>{% endif %}
 
 <h2>Actualizaciones Windows</h2>
 {% if patch_statuses %}

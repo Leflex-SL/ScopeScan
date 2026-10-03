@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import base64
+
 import pytest
 from fastapi.testclient import TestClient
 
 from medscan import analysis, db
+from medscan.msf_modules import VULNERABLE
 from medscan.nmap_parser import parse_string
 from medscan.web import app as web_app
 
@@ -49,11 +52,41 @@ def test_panel_vacio(client):
     respuesta = client.get("/")
     assert respuesta.status_code == 200
     assert "Todavia no hay escaneos" in respuesta.text
+    assert "Capacidades" in respuesta.text
+    assert "Explotacion directa" in respuesta.text
+    assert "Solo handoff .rc por defecto" in respuesta.text
 
 
 def test_panel_rechaza_cliente_remoto():
     remote = TestClient(web_app.app, client=("203.0.113.10", 50000))
     assert remote.get("/").status_code == 403
+
+
+def test_panel_remoto_permite_basic_auth_configurado(monkeypatch):
+    monkeypatch.setenv("MEDSCAN_PANEL_USER", "audit")
+    monkeypatch.setenv("MEDSCAN_PANEL_PASSWORD", "secret")
+    token = base64.b64encode(b"audit:secret").decode()
+    remote = TestClient(web_app.app, client=("203.0.113.10", 50000))
+
+    denied = remote.get("/")
+    assert denied.status_code == 403
+    assert denied.headers["www-authenticate"] == 'Basic realm="Medscan"'
+
+    allowed = remote.get("/", headers={"Authorization": f"Basic {token}"})
+    assert allowed.status_code == 200
+    assert "Capacidades" in allowed.text
+
+
+def test_panel_rechaza_post_con_origin_cruzado(client, cola):
+    respuesta = client.post(
+        "/scans",
+        data={"targets": "192.168.1.10", "profile": "rapido", "authorized": "1"},
+        headers={"Origin": "http://evil.example"},
+        follow_redirects=False,
+    )
+    assert respuesta.status_code == 403
+    assert "Origen" in respuesta.text
+    assert cola.enviados == []
 
 
 def test_formulario_de_nuevo_escaneo(client):
@@ -125,6 +158,10 @@ def test_detalle_y_estado(client, nmap_xml):
     assert "192.168.1.10" in detalle.text
     assert "OpenSSH" in detalle.text
     assert "Telnet" in detalle.text
+    assert "Attack Path" in detalle.text
+    assert "Ejecuciones de explotacion" in detalle.text
+    assert f'href="/scans/{scan_id}/export.json"' in detalle.text
+    assert f'href="/scans/{scan_id}/findings.csv"' in detalle.text
 
     estado = client.get(f"/api/scans/{scan_id}/status").json()
     assert estado["status"] == "done"
@@ -133,6 +170,21 @@ def test_detalle_y_estado(client, nmap_xml):
     informe = client.get(f"/scans/{scan_id}/report")
     assert informe.status_code == 200
     assert "Informe de escaneo" in informe.text
+    assert "Attack Path" in informe.text
+
+    exported = client.get(f"/scans/{scan_id}/export.json")
+    assert exported.status_code == 200
+    assert exported.json()["scan"]["id"] == scan_id
+    assert "attachment" in exported.headers["content-disposition"]
+
+    csv_exported = client.get(f"/scans/{scan_id}/findings.csv")
+    assert csv_exported.status_code == 200
+    assert csv_exported.text.startswith("scan_id,host,port")
+
+    zipped = client.get(f"/scans/{scan_id}/bundle.zip")
+    assert zipped.status_code == 200
+    assert zipped.content.startswith(b"PK")
+    assert "attachment" in zipped.headers["content-disposition"]
 
 
 def test_filtro_de_severidad_en_el_detalle(client, nmap_xml):
@@ -203,6 +255,7 @@ def test_enriquecimiento_y_inventario_visibles(client, monkeypatch, nmap_xml):
 
     monkeypatch.setattr(web_app.nvd, "enrich_scan", fake_enrich)
     monkeypatch.setattr(web_app.windows_inventory, "inventory_scan", fake_inventory)
+    monkeypatch.setattr(web_app, "searchsploit_available", lambda: True)
     assert client.post(f"/scans/{scan_id}/enrich/nvd", follow_redirects=False).status_code == 303
     assert client.post(f"/scans/{scan_id}/inventory/windows", data={
         "host": "192.168.1.10",
@@ -218,8 +271,31 @@ def test_enriquecimiento_y_inventario_visibles(client, monkeypatch, nmap_xml):
     assert "Posible afectacion" in detail
     assert "KB123" in detail
     assert "BIOS 1.2" in detail
+
+    def fake_exploitdb(_scan_id):
+        db.replace_exploitdb_results(_scan_id, [{
+            "cve_id": "CVE-2024-12345",
+            "edb_id": "99999",
+            "title": "Example public PoC",
+            "type": "remote",
+            "platform": "linux",
+            "path": "/exploitdb/99999.py",
+            "url": "https://www.exploit-db.com/exploits/99999",
+        }])
+        db.set_enrichment_status(_scan_id, "exploitdb", "done")
+        return 1
+
+    monkeypatch.setattr(web_app.exploitdb, "enrich_scan", fake_exploitdb)
+    assert client.post(
+        f"/scans/{scan_id}/enrich/exploitdb", follow_redirects=False
+    ).status_code == 303
+    detail = client.get(f"/scans/{scan_id}").text
+    assert "Example public PoC" in detail
+    assert "EDB-ID 99999" in detail
+
     report = client.get(f"/scans/{scan_id}/report").text
     assert "CVE-2024-12345" in report
+    assert "Example public PoC" in report
     assert "KB123" in report
 
     patch_calls = []
@@ -231,6 +307,60 @@ def test_enriquecimiento_y_inventario_visibles(client, monkeypatch, nmap_xml):
     monkeypatch.setattr(web_app.msrc, "assess_scan", fake_patches)
     assert client.post(f"/scans/{scan_id}/enrich/msrc", follow_redirects=False).status_code == 303
     assert patch_calls == [scan_id]
+
+
+def test_panel_descarga_rc_metasploit_sin_lanzar_exploit(client, monkeypatch, nmap_xml, tmp_path):
+    monkeypatch.delenv("MEDSCAN_ENABLE_EXPLOIT", raising=False)
+    scan_id = db.create_scan(name="smb", targets="192.168.1.10", profile="rapido")
+    db.save_results(scan_id, parse_string(nmap_xml), [], 0)
+    db.set_status(scan_id, "done")
+    module = "exploit/windows/smb/ms17_010_eternalblue"
+    db.save_msf_results(scan_id, [{
+        "host": "192.168.1.10",
+        "port": 445,
+        "protocol": "tcp",
+        "module": module,
+        "module_kind": "exploit",
+        "action": "check",
+        "result": VULNERABLE,
+        "detail": "Host is vulnerable",
+    }])
+    monkeypatch.setattr(web_app.msf, "raw_dir", lambda: tmp_path)
+    monkeypatch.setattr(web_app.msf, "msf_lhost", lambda: "192.168.1.50")
+    monkeypatch.setattr(web_app.msf, "msf_lport", lambda: 4444)
+    monkeypatch.setattr(web_app, "msf_available", lambda: True)
+
+    detail = client.get(f"/scans/{scan_id}").text
+    assert "Explotacion directa deshabilitada" in detail
+
+    response = client.post(
+        f"/scans/{scan_id}/msf/exploit-rc",
+        data={
+            "host": "192.168.1.10",
+            "port": "445",
+            "module": module,
+            "authorized": "1",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.headers["content-disposition"].endswith('.rc"')
+    assert "use exploit/windows/smb/ms17_010_eternalblue" in response.text
+    assert "exploit -z" in response.text
+    runs = db.get_exploit_runs(scan_id)
+    assert runs[0]["status"] == "prepared"
+
+    blocked = client.post(
+        f"/scans/{scan_id}/msf/exploit",
+        data={
+            "host": "192.168.1.10",
+            "port": "445",
+            "module": module,
+            "authorized": "1",
+        },
+    )
+    assert blocked.status_code == 409
+    assert "deshabilitada" in blocked.text
 
 
 def test_inventario_linux_desde_panel(client, monkeypatch, nmap_xml):

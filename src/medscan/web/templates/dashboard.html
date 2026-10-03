@@ -19,6 +19,40 @@
 </div>
 {% endif %}
 
+<h2>Capacidades</h2>
+<div class="grid cols-4">
+  <div class="stat">
+    <div class="value"><span class="badge {{ 'low' if env.ready else 'critical' }}">{{ 'OK' if env.ready else 'NO' }}</span></div>
+    <div class="label">nmap</div>
+    <div class="small muted">{{ env.nmap_path or 'No encontrado' }}</div>
+  </div>
+  <div class="stat">
+    <div class="value"><span class="badge {{ 'low' if env.privileged else 'medium' }}">{{ 'Admin' if env.privileged else 'Usuario' }}</span></div>
+    <div class="label">Privilegios</div>
+    <div class="small muted">{{ 'SYN scan y SO' if env.privileged else 'Connect scan (-sT)' }}</div>
+  </div>
+  <div class="stat">
+    <div class="value"><span class="badge {{ 'low' if env.msf_ready else 'info' }}">{{ 'OK' if env.msf_ready else 'OFF' }}</span></div>
+    <div class="label">Metasploit</div>
+    <div class="small muted">{{ env.msf_path or 'Verificacion MSF deshabilitada' }}</div>
+  </div>
+  <div class="stat">
+    <div class="value"><span class="badge {{ 'low' if env.searchsploit_ready else 'info' }}">{{ 'OK' if env.searchsploit_ready else 'OFF' }}</span></div>
+    <div class="label">Exploit-DB</div>
+    <div class="small muted">{{ env.searchsploit_path or 'SearchSploit no encontrado' }}</div>
+  </div>
+  <div class="stat">
+    <div class="value"><span class="badge {{ 'critical' if env.msf_exploit_enabled else 'info' }}">{{ 'ON' if env.msf_exploit_enabled else 'OFF' }}</span></div>
+    <div class="label">Explotacion directa</div>
+    <div class="small muted">{{ 'MEDSCAN_ENABLE_EXPLOIT=1' if env.msf_exploit_enabled else 'Solo handoff .rc por defecto' }}</div>
+  </div>
+  <div class="stat">
+    <div class="value"><span class="badge {{ 'low' if env.panel_auth_enabled else 'info' }}">{{ 'ON' if env.panel_auth_enabled else 'LOCAL' }}</span></div>
+    <div class="label">Auth panel</div>
+    <div class="small muted">{{ 'Basic Auth para clientes no locales' if env.panel_auth_enabled else 'Solo loopback' }}</div>
+  </div>
+</div>
+
 <div class="grid cols-4">
   <div class="stat"><div class="value">{{ stats.scans }}</div><div class="label">Escaneos</div></div>
   <div class="stat"><div class="value">{{ stats.hosts }}</div><div class="label">Hosts vivos</div></div>

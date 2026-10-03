@@ -8,13 +8,34 @@ escaneos.
 from __future__ import annotations
 
 import argparse
+import compileall
 import ipaddress
 import re
 import sys
+import tempfile
 from pathlib import Path
 
-from . import db, linux_inventory, msrc, nvd, report, service, windows_inventory
-from .config import MAX_HOSTS_DEFAULT, probe_environment
+from . import (
+    db,
+    exploitdb,
+    export,
+    linux_inventory,
+    msf,
+    msf_modules,
+    msrc,
+    nvd,
+    report,
+    service,
+    windows_inventory,
+)
+from .config import (
+    MAX_HOSTS_DEFAULT,
+    MsfConsoleNotFound,
+    SearchSploitNotFound,
+    msf_available,
+    msf_exploit_enabled,
+    probe_environment,
+)
 from .models import Assessment, Severity
 from .profiles import DEFAULT_PROFILE, PROFILES
 from .service import ScanRequest
@@ -43,6 +64,12 @@ def cmd_doctor(_args: argparse.Namespace) -> int:
     if env.nmap_version:
         print(f"  version:     {env.nmap_version}")
     print(f"  privilegios: {'si (SYN scan y -O disponibles)' if env.privileged else 'no (solo -sT)'}")
+    print(f"  metasploit:  {env.msf_path or 'no instalado (verificacion MSF deshabilitada)'}")
+    print(
+        "  explotacion: "
+        f"{'habilitada' if msf_exploit_enabled() else 'deshabilitada (MEDSCAN_ENABLE_EXPLOIT=1)'}"
+    )
+    print(f"  exploit-db:  {env.searchsploit_path or 'no instalado (correlacion Exploit-DB deshabilitada)'}")
     print(f"  datos:       {env.data_dir}")
     if not env.ready:
         print()
@@ -56,6 +83,37 @@ def cmd_doctor(_args: argparse.Namespace) -> int:
     if not env.privileged:
         print()
         print("Sugerencia: abre la consola como administrador para el escaneo completo.")
+    return 0
+
+
+def cmd_self_test(_args: argparse.Namespace) -> int:
+    """Chequeo local rapido: no lanza nmap ni toca la red."""
+    checks: list[tuple[str, bool, str]] = []
+    package_dir = Path(__file__).resolve().parent
+
+    checks.append(("codigo", compileall.compile_dir(package_dir, quiet=1), "compileall src/medscan"))
+    checks.append(("plantillas", (package_dir / "web" / "templates").is_dir(), "web/templates existe"))
+    checks.append(("estaticos", (package_dir / "web" / "static").is_dir(), "web/static existe"))
+    try:
+        with tempfile.TemporaryDirectory(prefix="medscan-selftest-") as tmp:
+            test_db = Path(tmp) / "selftest.sqlite3"
+            db.init_db(test_db)
+            checks.append(("sqlite", test_db.exists(), "schema inicializable"))
+    except Exception as exc:  # noqa: BLE001 - self-test debe explicar cualquier fallo local
+        checks.append(("sqlite", False, str(exc)))
+
+    checks.append(("cli", "export" in build_parser().format_help(), "parser principal"))
+    env = probe_environment()
+    checks.append(("entorno", True, f"nmap={'ok' if env.ready else 'no instalado'}; datos={env.data_dir}"))
+
+    failed = False
+    print("Self-test de Medscan")
+    for name, ok, detail in checks:
+        failed = failed or not ok
+        print(f"  {'OK ' if ok else 'ERR'} {name}: {detail}")
+    if failed:
+        return 1
+    print("Self-test completado. No se ha lanzado nmap ni se ha tocado la red.")
     return 0
 
 
@@ -193,6 +251,38 @@ def cmd_report(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_export(args: argparse.Namespace) -> int:
+    db.init_db()
+    try:
+        if args.format == "json":
+            content: str | bytes = export.render_json(args.scan_id)
+            binary = False
+        elif args.format == "csv":
+            content = export.render_findings_csv(args.scan_id)
+            binary = False
+        else:
+            content = export.render_bundle(args.scan_id)
+            binary = True
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+
+    if args.output:
+        destino = Path(args.output)
+        destino.parent.mkdir(parents=True, exist_ok=True)
+        if binary:
+            destino.write_bytes(content if isinstance(content, bytes) else content.encode())
+        else:
+            destino.write_text(str(content), encoding="utf-8", newline="")
+        print(f"Exportacion escrita en {destino.resolve()}")
+    elif binary:
+        print("El formato bundle exige -o/--output para escribir un ZIP.", file=sys.stderr)
+        return 2
+    else:
+        print(content, end="")
+    return 0
+
+
 def cmd_enrich(args: argparse.Namespace) -> int:
     db.init_db()
     try:
@@ -202,6 +292,21 @@ def cmd_enrich(args: argparse.Namespace) -> int:
         return 1
     print(f"{count} coincidencias candidatas de NVD en el escaneo #{args.scan_id}.")
     print("Una coincidencia CPE no confirma vulnerabilidad ni parche pendiente.")
+    return 0
+
+
+def cmd_exploitdb(args: argparse.Namespace) -> int:
+    db.init_db()
+    try:
+        count = exploitdb.enrich_scan(args.scan_id)
+    except SearchSploitNotFound as exc:
+        print(f"Error Exploit-DB: {exc}", file=sys.stderr)
+        return 1
+    except (ValueError, exploitdb.ExploitDbError) as exc:
+        print(f"Error Exploit-DB: {exc}", file=sys.stderr)
+        return 1
+    print(f"{count} referencia(s) Exploit-DB guardadas para el escaneo #{args.scan_id}.")
+    print("Son PoC publicas por CVE; medscan no las descarga ni ejecuta.")
     return 0
 
 
@@ -243,6 +348,131 @@ def cmd_patches(args: argparse.Namespace) -> int:
     print(f"Evaluacion MSRC guardada: {count} CVE pendientes en el escaneo #{args.scan_id}.")
     print("La comparacion usa producto exacto y build acumulativo observado.")
     return 0
+
+
+_MSF_RESULT_STYLE = {
+    msf_modules.VULNERABLE: ("critical", "VULNERABLE"),
+    msf_modules.LIKELY: ("high", "PROBABLE"),
+    msf_modules.UNKNOWN: ("info", "SIN DATOS"),
+    msf_modules.SAFE: ("low", "NO VULN."),
+    msf_modules.ERROR: ("medium", "ERROR"),
+}
+
+
+def cmd_msf(args: argparse.Namespace) -> int:
+    db.init_db()
+    if db.get_scan(args.scan_id) is None:
+        print(f"No existe el escaneo {args.scan_id}", file=sys.stderr)
+        return 2
+
+    plan = msf.plan_scan(args.scan_id)
+    if not plan:
+        print("Ningun puerto/servicio del escaneo tiene modulo de verificacion asociado.")
+        print("Metasploit solo se lanza cuando hay un servicio o CVE reconocido.")
+        return 0
+
+    print(f"Plan de verificacion Metasploit para el escaneo #{args.scan_id}:")
+    for address, portid, service_name, mod in plan:
+        print(f"  {address}:{portid:<6} {mod.action:<6} {mod.path}  ({service_name or '?'})")
+    print(
+        f"\n{len(plan)} comprobacion(es). Solo scanner/`check`: medscan NO lanza exploits "
+        "ni payloads."
+    )
+
+    if args.dry_run:
+        return 0
+
+    if not msf_available():
+        print(file=sys.stderr)
+        print(MsfConsoleNotFound().args[0], file=sys.stderr)
+        return 1
+
+    if not args.yes:
+        respuesta = input(
+            "\nVerifica solo sistemas propios o autorizados. Lanzar Metasploit? [s/N] "
+        )
+        if respuesta.strip().lower() not in ("s", "si", "y", "yes"):
+            print("Cancelado.")
+            return 1
+
+    def on_progress(line: str) -> None:
+        if sys.stdout.isatty():
+            print(f"  {line}")
+
+    try:
+        saved = msf.verify_scan(
+            args.scan_id,
+            allow_public=args.allow_public,
+            authorized_by=args.authorized_by or "",
+            progress=on_progress,
+        )
+    except msf.MsfScopeError as exc:
+        print(f"\nAlcance: {exc}", file=sys.stderr)
+        return 2
+    except (MsfConsoleNotFound, msf.MsfError) as exc:
+        print(f"\nError Metasploit: {exc}", file=sys.stderr)
+        return 1
+
+    print(f"\n{saved} veredicto(s) guardados en el escaneo #{args.scan_id}.\n")
+    _print_msf_results(args.scan_id)
+    return 0
+
+
+def cmd_msf_catalog(_args: argparse.Namespace) -> int:
+    """Lista el catalogo allowlistado de Metasploit sin tocar objetivos."""
+    print("Catalogo Metasploit allowlistado")
+    print("  scanner/check: se usan para verificacion")
+    print("  exploit: solo se prepara .rc o se ejecuta si MEDSCAN_ENABLE_EXPLOIT=1")
+    for mod in msf_modules.catalog():
+        cves = ", ".join(mod.cves) if mod.cves else "-"
+        exploitable = "si" if mod.exploitable else "no"
+        print()
+        print(f"{mod.path}")
+        print(f"  tipo: {mod.kind}; explotable: {exploitable}; payload: {mod.payload or '-'}")
+        print(f"  CVE: {cves}")
+        if mod.prerequisites:
+            print(f"  prerequisitos: {mod.prerequisites}")
+        if mod.safety_note:
+            print(f"  guarda: {mod.safety_note}")
+    return 0
+
+
+def cmd_msf_rc(args: argparse.Namespace) -> int:
+    db.init_db()
+    if db.get_scan(args.scan_id) is None:
+        print(f"No existe el escaneo {args.scan_id}", file=sys.stderr)
+        return 2
+    try:
+        rc_path, _rc_text = msf.prepare_exploit_resource(
+            args.scan_id,
+            host=args.host,
+            port=args.port,
+            module_path=args.module,
+            allow_public=args.allow_public,
+        )
+    except msf.MsfScopeError as exc:
+        print(f"Alcance: {exc}", file=sys.stderr)
+        return 2
+    except (ValueError, msf.MsfError) as exc:
+        print(f"Error Metasploit: {exc}", file=sys.stderr)
+        return 1
+
+    print(f"Resource script preparado: {rc_path}")
+    print("Ejecucion manual sugerida: msfconsole -q -r <ruta-del-rc>")
+    return 0
+
+
+def _print_msf_results(scan_id: int) -> None:
+    rows = db.get_msf_results(scan_id)
+    if not rows:
+        return
+    for row in rows:
+        slug, etiqueta = _MSF_RESULT_STYLE.get(row["result"], ("info", row["result"].upper()))
+        ubicacion = f"{row['host']}:{row['port']}" if row["port"] else row["host"]
+        linea = f"  {_color(f'[{etiqueta:>10}]', slug)} {ubicacion:<22} {row['module']}"
+        if row["detail"]:
+            linea += f"\n{' ' * 37}{row['detail']}"
+        print(linea)
 
 
 def cmd_serve(args: argparse.Namespace) -> int:
@@ -312,6 +542,12 @@ def build_parser() -> argparse.ArgumentParser:
     p_report.add_argument("-o", "--output", help="Ruta del fichero de salida")
     p_report.set_defaults(func=cmd_report)
 
+    p_export = sub.add_parser("export", help="Exportar un escaneo a JSON, CSV o ZIP")
+    p_export.add_argument("scan_id", type=int)
+    p_export.add_argument("-f", "--format", choices=("json", "csv", "bundle"), default="json")
+    p_export.add_argument("-o", "--output", help="Ruta de salida; si se omite escribe en stdout")
+    p_export.set_defaults(func=cmd_export)
+
     p_enrich = sub.add_parser("enrich", help="Cruzar CPE de un escaneo con NVD (candidatos)")
     p_enrich.add_argument("scan_id", type=int)
     p_enrich.add_argument(
@@ -319,6 +555,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Enviar tambien a NVD la version Intel ME obtenida por inventario autenticado",
     )
     p_enrich.set_defaults(func=cmd_enrich)
+
+    p_exploitdb = sub.add_parser(
+        "exploitdb", help="Cruzar las CVE de un escaneo con Exploit-DB/SearchSploit"
+    )
+    p_exploitdb.add_argument("scan_id", type=int)
+    p_exploitdb.set_defaults(func=cmd_exploitdb)
 
     p_inventory = sub.add_parser("inventory", help="Inventario autenticado Windows por WinRM")
     p_inventory.add_argument("scan_id", type=int)
@@ -341,8 +583,39 @@ def build_parser() -> argparse.ArgumentParser:
     p_patches.add_argument("--release", help="Boletin CVRF concreto, por ejemplo 2026-Sep")
     p_patches.set_defaults(func=cmd_patches)
 
+    p_msf = sub.add_parser(
+        "msf", help="Verificar explotabilidad con Metasploit (scanner + check, sin exploits)"
+    )
+    p_msf.add_argument("scan_id", type=int)
+    p_msf.add_argument("--dry-run", action="store_true",
+                       help="Solo mostrar el plan de modulos, sin lanzar msfconsole")
+    p_msf.add_argument("-y", "--yes", action="store_true", help="No pedir confirmacion")
+    p_msf.add_argument("--allow-public", action="store_true",
+                       help="Permitir verificar objetivos fuera de rango privado (exige autorizacion)")
+    p_msf.add_argument("--authorized-by", help="Quien autoriza (obligatorio con --allow-public)")
+    p_msf.set_defaults(func=cmd_msf)
+
+    p_msf_catalog = sub.add_parser(
+        "msf-catalog", help="Listar el catalogo Metasploit allowlistado"
+    )
+    p_msf_catalog.set_defaults(func=cmd_msf_catalog)
+
+    p_msf_rc = sub.add_parser(
+        "msf-rc", help="Preparar un .rc de explotacion Metasploit para ejecucion manual"
+    )
+    p_msf_rc.add_argument("scan_id", type=int)
+    p_msf_rc.add_argument("--host", required=True, help="Host del escaneo ya verificado")
+    p_msf_rc.add_argument("--module", required=True, help="Modulo exploit de Metasploit")
+    p_msf_rc.add_argument("--port", type=int, help="Puerto remoto, si aplica")
+    p_msf_rc.add_argument("--allow-public", action="store_true",
+                          help="Permitir objetivo publico si el escaneo tiene autorizacion")
+    p_msf_rc.set_defaults(func=cmd_msf_rc)
+
     p_doctor = sub.add_parser("doctor", help="Comprobar el entorno (nmap, privilegios, rutas)")
     p_doctor.set_defaults(func=cmd_doctor)
+
+    p_self_test = sub.add_parser("self-test", help="Comprobar instalacion local sin tocar la red")
+    p_self_test.set_defaults(func=cmd_self_test)
 
     p_profiles = sub.add_parser("profiles", help="Listar los perfiles de escaneo")
     p_profiles.set_defaults(func=cmd_profiles)

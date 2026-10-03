@@ -4,16 +4,44 @@ from __future__ import annotations
 
 import ipaddress
 import json
+from base64 import b64decode
+from binascii import Error as Base64Error
 from contextlib import asynccontextmanager
 from pathlib import Path
+from urllib.parse import urlparse
 
 from fastapi import BackgroundTasks, FastAPI, Form, HTTPException, Request
-from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse
+from fastapi.responses import (
+    HTMLResponse,
+    JSONResponse,
+    PlainTextResponse,
+    RedirectResponse,
+    Response,
+)
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from .. import db, linux_inventory, msrc, nvd, report, windows_inventory
-from ..config import probe_environment
+from .. import (
+    attack_paths,
+    db,
+    exploitdb,
+    export,
+    linux_inventory,
+    msf,
+    msf_modules,
+    msrc,
+    nvd,
+    report,
+    windows_inventory,
+)
+from ..config import (
+    msf_available,
+    msf_exploit_enabled,
+    panel_auth_enabled,
+    panel_auth_matches,
+    probe_environment,
+    searchsploit_available,
+)
 from ..jobs import QUEUE
 from ..models import Assessment, Severity
 from ..profiles import DEFAULT_PROFILE, PROFILES
@@ -39,16 +67,74 @@ app = FastAPI(title="Medscan", lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
 
 
+_UNSAFE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
+
+
 @app.middleware("http")
 async def local_access_only(request: Request, call_next):
-    """El panel maneja inventarios autenticados y no tiene login propio."""
+    """El panel maneja inventarios autenticados; remoto exige Basic Auth opt-in."""
     try:
         local = request.client is not None and ipaddress.ip_address(request.client.host).is_loopback
     except ValueError:
         local = False
-    if not local:
-        return PlainTextResponse("El panel solo acepta conexiones locales", status_code=403)
+    if not local and not _basic_auth_ok(request):
+        headers = {}
+        if panel_auth_enabled():
+            headers["WWW-Authenticate"] = 'Basic realm="Medscan"'
+        return PlainTextResponse(
+            "El panel solo acepta conexiones locales o autenticacion configurada",
+            status_code=403,
+            headers=headers,
+        )
+    if not _same_origin_write(request):
+        return PlainTextResponse("Origen del formulario no permitido", status_code=403)
     return await call_next(request)
+
+
+def _basic_auth_ok(request: Request) -> bool:
+    """Permite clientes no locales solo cuando el operador configuro Basic Auth."""
+    if not panel_auth_enabled():
+        return False
+    scheme, _, token = request.headers.get("authorization", "").partition(" ")
+    if scheme.lower() != "basic" or not token:
+        return False
+    try:
+        raw = b64decode(token, validate=True).decode("utf-8")
+    except (Base64Error, UnicodeDecodeError):
+        return False
+    user, separator, password = raw.partition(":")
+    return bool(separator) and panel_auth_matches(user, password)
+
+
+def _same_origin_write(request: Request) -> bool:
+    """Mitiga CSRF del panel local para metodos que cambian estado.
+
+    Los clientes sin cabeceras Origin/Referer siguen funcionando (curl, tests,
+    scripts locales). Los navegadores modernos envian Origin en POST; si aparece
+    una cabecera de navegador, debe coincidir exactamente con el host del panel.
+    """
+    if request.method.upper() not in _UNSAFE_METHODS:
+        return True
+    origin = request.headers.get("origin")
+    if origin:
+        return _matches_panel_origin(request, origin)
+    referer = request.headers.get("referer")
+    if referer:
+        return _matches_panel_origin(request, referer)
+    return True
+
+
+def _matches_panel_origin(request: Request, value: str) -> bool:
+    parsed = urlparse(value)
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        return False
+    expected_host = (request.url.hostname or "").strip("[]").lower()
+    actual_host = parsed.hostname.strip("[]").lower()
+    if actual_host != expected_host:
+        return False
+    expected_port = request.url.port or (443 if request.url.scheme == "https" else 80)
+    actual_port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    return parsed.scheme == request.url.scheme and actual_port == expected_port
 
 
 def _severity_meta() -> list[dict[str, str | int]]:
@@ -176,17 +262,43 @@ def scan_detail(request: Request, scan_id: int, min_severity: int = 0):
             "hosts": db.hosts_with_ports(scan_id),
             "findings": db.get_findings(scan_id, min_severity=min_severity),
             "candidates": db.get_cve_candidates(scan_id),
+            "exploitdb_results": db.get_exploitdb_results(scan_id),
             "controls": db.get_control_results(scan_id),
             "patch_statuses": db.get_windows_patch_statuses(scan_id),
             "patch_candidates": db.get_windows_patch_candidates(scan_id),
             "inventories": db.get_host_inventories(scan_id),
             "enrichment": db.get_enrichment_statuses(scan_id),
             "counts": db.severity_counts(scan_id),
+            "attack_paths": attack_paths.build(scan_id),
             "min_severity": min_severity,
             "active": QUEUE.is_active(scan_id),
+            "msf_results": db.get_msf_results(scan_id),
+            "exploit_runs": db.get_exploit_runs(scan_id),
+            "msf_exploitable": msf.exploitable_results(scan_id),
+            "msf_available": msf_available(),
+            "msf_exploit_enabled": msf_exploit_enabled(),
+            "searchsploit_available": searchsploit_available(),
+            "msf_result_slug": _msf_result_slug,
             "json": json,
         },
     )
+
+
+# Severidad visual de cada veredicto MSF, para reutilizar los colores del panel.
+_MSF_SLUG = {
+    msf_modules.PREPARED: "info",
+    msf_modules.EXPLOITED: "critical",
+    msf_modules.VULNERABLE: "critical",
+    msf_modules.LIKELY: "high",
+    msf_modules.FAILED: "medium",
+    msf_modules.ERROR: "medium",
+    msf_modules.UNKNOWN: "info",
+    msf_modules.SAFE: "low",
+}
+
+
+def _msf_result_slug(result: str) -> str:
+    return _MSF_SLUG.get(result, "info")
 
 
 @app.get("/api/scans/{scan_id}/status")
@@ -234,6 +346,47 @@ def scan_report(scan_id: int):
     if scan is None:
         raise HTTPException(status_code=404, detail="Escaneo no encontrado")
     return HTMLResponse(report.render_report(scan_id))
+
+
+@app.get("/scans/{scan_id}/export.json")
+def scan_export_json(scan_id: int):
+    if db.get_scan(scan_id) is None:
+        raise HTTPException(status_code=404, detail="Escaneo no encontrado")
+    return Response(
+        export.render_json(scan_id),
+        media_type="application/json",
+        headers={
+            "Content-Disposition": f'attachment; filename="medscan-{scan_id:05d}.json"'
+        },
+    )
+
+
+@app.get("/scans/{scan_id}/findings.csv")
+def scan_findings_csv(scan_id: int):
+    if db.get_scan(scan_id) is None:
+        raise HTTPException(status_code=404, detail="Escaneo no encontrado")
+    return Response(
+        export.render_findings_csv(scan_id),
+        media_type="text/csv; charset=utf-8",
+        headers={
+            "Content-Disposition": (
+                f'attachment; filename="medscan-{scan_id:05d}-findings.csv"'
+            )
+        },
+    )
+
+
+@app.get("/scans/{scan_id}/bundle.zip")
+def scan_bundle_zip(scan_id: int):
+    if db.get_scan(scan_id) is None:
+        raise HTTPException(status_code=404, detail="Escaneo no encontrado")
+    return Response(
+        export.render_bundle(scan_id),
+        media_type="application/zip",
+        headers={
+            "Content-Disposition": f'attachment; filename="medscan-{scan_id:05d}.zip"'
+        },
+    )
 
 
 def _run_nvd(scan_id: int, include_firmware: bool) -> None:
@@ -347,6 +500,136 @@ def enrich_msrc(scan_id: int, background_tasks: BackgroundTasks):
     if not status or status["status"] != "running":
         db.set_enrichment_status(scan_id, "msrc", "running")
         background_tasks.add_task(_run_msrc, scan_id)
+    return RedirectResponse(f"/scans/{scan_id}", status_code=303)
+
+
+def _run_exploitdb(scan_id: int) -> None:
+    try:
+        exploitdb.enrich_scan(scan_id)
+    except Exception as exc:  # noqa: BLE001 - el error debe quedar visible tras responder
+        db.set_enrichment_status(scan_id, exploitdb.ENRICH_KIND, "failed", str(exc))
+
+
+@app.post("/scans/{scan_id}/enrich/exploitdb")
+def enrich_exploitdb(scan_id: int, background_tasks: BackgroundTasks):
+    scan = db.get_scan(scan_id)
+    if scan is None:
+        raise HTTPException(status_code=404, detail="Escaneo no encontrado")
+    if scan["status"] != "done":
+        raise HTTPException(status_code=409, detail="El escaneo debe terminar primero")
+    if not searchsploit_available():
+        raise HTTPException(status_code=409, detail="searchsploit no esta instalado")
+    status = db.get_enrichment_statuses(scan_id).get(exploitdb.ENRICH_KIND)
+    if not status or status["status"] != "running":
+        db.set_enrichment_status(scan_id, exploitdb.ENRICH_KIND, "running")
+        background_tasks.add_task(_run_exploitdb, scan_id)
+    return RedirectResponse(f"/scans/{scan_id}", status_code=303)
+
+
+def _run_msf_verify(scan_id: int) -> None:
+    try:
+        msf.verify_scan(scan_id)
+    except Exception as exc:  # noqa: BLE001 - el error debe quedar visible tras responder
+        db.set_enrichment_status(scan_id, msf.ENRICH_KIND, "failed", str(exc))
+
+
+@app.post("/scans/{scan_id}/enrich/msf")
+def enrich_msf(scan_id: int, background_tasks: BackgroundTasks):
+    scan = db.get_scan(scan_id)
+    if scan is None:
+        raise HTTPException(status_code=404, detail="Escaneo no encontrado")
+    if scan["status"] != "done":
+        raise HTTPException(status_code=409, detail="El escaneo debe terminar primero")
+    if not msf_available():
+        raise HTTPException(status_code=409, detail="msfconsole no esta instalado")
+    status = db.get_enrichment_statuses(scan_id).get(msf.ENRICH_KIND)
+    if not status or status["status"] != "running":
+        db.set_enrichment_status(scan_id, msf.ENRICH_KIND, "running")
+        background_tasks.add_task(_run_msf_verify, scan_id)
+    return RedirectResponse(f"/scans/{scan_id}", status_code=303)
+
+
+@app.post("/scans/{scan_id}/msf/exploit-rc")
+def msf_exploit_rc(
+    scan_id: int,
+    host: str = Form(...),
+    module: str = Form(...),
+    port: str = Form(""),
+    authorized: str = Form(""),
+):
+    scan = db.get_scan(scan_id)
+    if scan is None:
+        raise HTTPException(status_code=404, detail="Escaneo no encontrado")
+    if not authorized:
+        raise HTTPException(status_code=400, detail="Debes confirmar la autorizacion")
+
+    portid = int(port) if port.isdigit() else None
+    try:
+        rc_path, rc_text = msf.prepare_exploit_resource(
+            scan_id, host=host, port=portid, module_path=module
+        )
+    except msf.MsfScopeError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except (ValueError, msf.MsfError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    filename = Path(rc_path).name
+    return PlainTextResponse(
+        rc_text,
+        media_type="text/plain",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+def _run_msf_exploit(scan_id: int, host: str, port: int | None, module_path: str) -> None:
+    try:
+        msf.exploit_target(scan_id, host=host, port=port, module_path=module_path)
+    except Exception as exc:  # noqa: BLE001 - el error debe quedar visible tras responder
+        db.set_enrichment_status(scan_id, "metasploit-exploit", "failed", str(exc))
+    else:
+        db.set_enrichment_status(scan_id, "metasploit-exploit", "done")
+
+
+@app.post("/scans/{scan_id}/msf/exploit")
+def msf_exploit(
+    scan_id: int,
+    background_tasks: BackgroundTasks,
+    host: str = Form(...),
+    module: str = Form(...),
+    port: str = Form(""),
+    authorized: str = Form(""),
+):
+    scan = db.get_scan(scan_id)
+    if scan is None:
+        raise HTTPException(status_code=404, detail="Escaneo no encontrado")
+    if not msf_available():
+        raise HTTPException(status_code=409, detail="msfconsole no esta instalado")
+    if not msf_exploit_enabled():
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "La explotacion directa esta deshabilitada. Usa Preparar .rc "
+                "o define MEDSCAN_ENABLE_EXPLOIT=1."
+            ),
+        )
+    # Casilla de autorizacion obligatoria: explotar es una accion deliberada.
+    if not authorized:
+        raise HTTPException(status_code=400, detail="Debes confirmar la autorizacion para explotar")
+
+    portid = int(port) if port.isdigit() else None
+    # Validacion barata aqui (host del escaneo, modulo del catalogo). El scope real
+    # (privado/autorizado + verificacion previa) lo revalida exploit_target antes
+    # de disparar, ya en segundo plano.
+    if host not in {h["address"] for h in db.get_hosts(scan_id)}:
+        raise HTTPException(status_code=403, detail="El host no pertenece a este escaneo")
+    mod = msf_modules.module_by_path(module)
+    if mod is None or not mod.exploitable:
+        raise HTTPException(status_code=400, detail="Modulo no explotable o desconocido")
+
+    status = db.get_enrichment_statuses(scan_id).get("metasploit-exploit")
+    if not status or status["status"] != "running":
+        db.set_enrichment_status(scan_id, "metasploit-exploit", "running")
+        background_tasks.add_task(_run_msf_exploit, scan_id, host, portid, module)
     return RedirectResponse(f"/scans/{scan_id}", status_code=303)
 
 

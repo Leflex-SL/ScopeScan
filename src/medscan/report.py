@@ -13,7 +13,7 @@ from pathlib import Path
 
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
-from . import db, nvd
+from . import attack_paths, db, nvd
 from .models import Assessment, Severity
 
 TEMPLATE_DIR = Path(__file__).resolve().parent / "web" / "templates"
@@ -60,7 +60,10 @@ def render_report(scan_id: int) -> str:
         prioritarios=prioritarios,
         counts=counts,
         hosts=hosts,
+        attack_paths=attack_paths.build(scan_id),
         candidates=db.get_cve_candidates(scan_id),
+        exploitdb_results=db.get_exploitdb_results(scan_id),
+        exploit_runs=db.get_exploit_runs(scan_id),
         controls=db.get_control_results(scan_id),
         patch_statuses=db.get_windows_patch_statuses(scan_id),
         patch_candidates=db.get_windows_patch_candidates(scan_id),

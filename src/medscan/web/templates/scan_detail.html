@@ -17,6 +17,9 @@
       {% else %}
       <form method="post" action="/scans/{{ scan.id }}/rerun"><button>Repetir</button></form>
       <a class="btn" href="/scans/{{ scan.id }}/report" target="_blank">Informe</a>
+      <a class="btn" href="/scans/{{ scan.id }}/export.json">JSON</a>
+      <a class="btn" href="/scans/{{ scan.id }}/findings.csv">CSV</a>
+      <a class="btn" href="/scans/{{ scan.id }}/bundle.zip">ZIP</a>
       {% endif %}
       <form method="post" action="/scans/{{ scan.id }}/delete"
             onsubmit="return confirm('Se borrara el escaneo {{ scan.id }} y todos sus resultados. Continuar?')">
@@ -41,6 +44,14 @@
     </form>
     <span class="small muted">Se envian los CPE detectados a NVD. El firmware autenticado solo se envia si marcas la casilla. Las coincidencias no confirman vulnerabilidad.</span>
   </div>
+  <div class="actions" style="margin-top:10px">
+    <form method="post" action="/scans/{{ scan.id }}/enrich/exploitdb">
+      <button type="submit" {{ 'disabled' if not searchsploit_available or (enrichment.get('exploitdb') and enrichment.exploitdb.status == 'running') }}>Buscar PoC en Exploit-DB</button>
+    </form>
+    <span class="small muted">
+      {% if searchsploit_available %}Cruza las CVE del escaneo con SearchSploit local. Solo guarda referencias; no descarga ni ejecuta exploits.{% else %}searchsploit no esta instalado: Exploit-DB esta deshabilitado.{% endif %}
+    </span>
+  </div>
   {% if inventories.values() | rejectattr('platform', 'equalto', 'linux') | list %}
   <div class="actions" style="margin-top:10px">
     <form method="post" action="/scans/{{ scan.id }}/enrich/msrc">
@@ -49,8 +60,16 @@
     <span class="small muted">Descarga el boletin mensual publico y compara producto, build y UBR. No envia el inventario a Microsoft.</span>
   </div>
   {% endif %}
+  <div class="actions" style="margin-top:10px">
+    <form method="post" action="/scans/{{ scan.id }}/enrich/msf">
+      <button type="submit" {{ 'disabled' if not msf_available or (enrichment.get('metasploit') and enrichment.metasploit.status == 'running') }}>Verificar con Metasploit</button>
+    </form>
+    <span class="small muted">
+      {% if msf_available %}Lanza modulos scanner y <code>check</code> (sin explotar) para confirmar que servicios son explotables.{% else %}msfconsole no esta instalado: la verificacion esta deshabilitada.{% endif %}
+    </span>
+  </div>
   {% for kind, job in enrichment.items() %}
-    <p class="small {{ 'muted' if job.status != 'failed' else '' }}">{{ {'nvd': 'NVD', 'windows': 'Inventario Windows', 'linux': 'Inventario Linux', 'msrc': 'Parches Microsoft MSRC', 'threat_intel': 'CISA KEV / EPSS'}.get(kind, kind) }}: {{ job.status }}{% if job.error %} — {{ job.error }}{% endif %}</p>
+    <p class="small {{ 'muted' if job.status != 'failed' else '' }}">{{ {'nvd': 'NVD', 'windows': 'Inventario Windows', 'linux': 'Inventario Linux', 'msrc': 'Parches Microsoft MSRC', 'threat_intel': 'CISA KEV / EPSS', 'exploitdb': 'Exploit-DB', 'metasploit': 'Verificacion Metasploit', 'metasploit-exploit': 'Explotacion Metasploit'}.get(kind, kind) }}: {{ job.status }}{% if job.error %} — {{ job.error }}{% endif %}</p>
   {% endfor %}
   {% endif %}
 
@@ -76,6 +95,42 @@
   </div>
   {% endfor %}
 </div>
+
+<h2>Attack Path</h2>
+<p class="small muted">Vista por host y puerto que junta hallazgos, CVE candidatas, PoC publicas, verificacion Metasploit y ejecuciones realizadas.</p>
+{% if attack_paths %}
+<div class="card" style="padding:0">
+<table>
+  <thead><tr><th>Prioridad</th><th>Objetivo</th><th>Estado</th><th>Evidencia encadenada</th><th>Accion recomendada</th></tr></thead>
+  <tbody>
+  {% for path in attack_paths %}
+  <tr>
+    <td><span class="risk-dial" style="font-size:24px">{{ path.score }}</span><br><span class="badge {{ path.max_severity_slug }}">{{ severity_label(path.max_severity) }}</span></td>
+    <td class="mono small">{{ path.host }}{% if path.port %}:{{ path.port }}/{{ path.protocol }}{% endif %}<br><span class="muted">{{ path.service or '-' }} {{ path.product or '' }}</span></td>
+    <td><strong>{{ path.state }}</strong>
+      {% if path.best_msf %}<br><span class="small muted">MSF: {{ path.best_msf.result }}</span>{% endif %}
+      {% if path.best_poc %}<br><span class="small muted">PoC score: {{ path.best_poc.context_score }}</span>{% endif %}
+      {% if path.public_scope %}<br><span class="badge high">expuesto</span>{% endif %}
+      {% if path.exploited %}<br><span class="badge critical">explotada</span>{% endif %}</td>
+    <td class="small">
+      {% if path.cves %}<strong>CVE:</strong> {{ path.cves|join(', ') }}<br>{% endif %}
+      {{ path.findings|length }} hallazgo(s), {{ path.candidates|length }} candidata(s) NVD,
+      {{ path.exploitdb|length }} PoC Exploit-DB, {{ path.msf|length }} veredicto(s) MSF,
+      {{ path.exploit_runs|length }} ejecucion(es).
+      {% if path.known_exploited %}<br><strong>CISA KEV</strong>{% endif %}
+      {% if path.epss %}<br>EPSS max {{ '%.2f'|format(path.epss * 100) }}%{% endif %}
+      {% if path.best_poc and path.best_poc.matched_context %}<br><span class="muted">{{ path.best_poc.matched_context }}</span>{% endif %}
+      {% if path.exploitable_modules %}<br><strong>{{ path.exploitable_modules|length }} modulo(s) MSF allowlistado(s)</strong>{% endif %}
+    </td>
+    <td class="small">{{ path.recommendation }}</td>
+  </tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+{% else %}
+<p class="muted small">Sin ruta de ataque construida todavia.</p>
+{% endif %}
 
 <h2>Hallazgos</h2>
 <div class="filters">
@@ -146,6 +201,107 @@
 </table>
 </div>
 {% else %}<p class="muted small">Sin coincidencias guardadas. La busqueda se ejecuta bajo demanda.</p>{% endif %}
+
+<h2>PoC publicas en Exploit-DB</h2>
+<p class="small muted">Coincidencias locales de SearchSploit por CVE. Son referencias publicas para priorizacion y revision manual.</p>
+{% if exploitdb_results %}
+<div class="card" style="padding:0">
+<table>
+  <thead><tr><th>CVE</th><th>Exploit-DB</th><th>Relevancia</th><th>Tipo</th><th>Plataforma</th><th>Ruta local</th></tr></thead>
+  <tbody>
+  {% for item in exploitdb_results %}
+  <tr>
+    <td><a href="https://nvd.nist.gov/vuln/detail/{{ item.cve_id }}" target="_blank" rel="noopener">{{ item.cve_id }}</a></td>
+    <td>{% if item.url %}<a href="{{ item.url }}" target="_blank" rel="noopener">{{ item.title }}</a>{% else %}{{ item.title }}{% endif %}<br><span class="small muted">EDB-ID {{ item.edb_id }}{% if item.date %} · {{ item.date }}{% endif %}</span></td>
+    <td><strong>{{ item.context_score }}</strong><br><span class="small muted">{{ item.matched_context or 'Sin contexto de servicio' }}</span></td>
+    <td>{{ item.type or '-' }}</td>
+    <td>{{ item.platform or '-' }}</td>
+    <td class="mono small">{{ item.path or '-' }}</td>
+  </tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+{% else %}
+<p class="muted small">Sin coincidencias guardadas. Ejecuta la busqueda Exploit-DB despues de tener CVE en hallazgos o candidatas NVD.</p>
+{% endif %}
+
+<h2>Veredictos Metasploit</h2>
+<p class="small muted">La verificacion usa modulos scanner y <code>check</code>. Los botones de explotacion solo aparecen para modulos exploit con resultado vulnerable o probable.</p>
+{% if msf_results %}
+<div class="card" style="padding:0">
+<table>
+  <thead><tr><th>Resultado</th><th>Objetivo</th><th>Modulo</th><th>Evidencia</th><th>Accion</th></tr></thead>
+  <tbody>
+  {% for item in msf_results %}
+  {% set exploit = namespace(candidate=None) %}
+  {% for candidate in msf_exploitable %}
+    {% if candidate.host == item.host and candidate.port == item.port and candidate.module == item.module %}
+      {% set exploit.candidate = candidate %}
+    {% endif %}
+  {% endfor %}
+  <tr>
+    <td><span class="badge {{ msf_result_slug(item.result) }}">{{ item.result }}</span><br><span class="small muted">{{ item.action }}</span></td>
+    <td class="mono small">{{ item.host }}{% if item.port %}:{{ item.port }}/{{ item.protocol }}{% endif %}</td>
+    <td><span class="small">{{ item.module }}</span><br><span class="muted small">{{ item.module_kind }}</span></td>
+    <td><pre class="evidence">{{ item.detail or 'Sin detalle guardado.' }}</pre></td>
+    <td>
+      {% if exploit.candidate %}
+      <form method="post" action="/scans/{{ scan.id }}/msf/exploit-rc" class="stack">
+        <input type="hidden" name="host" value="{{ item.host }}">
+        <input type="hidden" name="port" value="{{ item.port or '' }}">
+        <input type="hidden" name="module" value="{{ item.module }}">
+        <label class="inline small"><input type="checkbox" name="authorized" value="1" required> Objetivo autorizado</label>
+        <button type="submit">Preparar .rc</button>
+        <span class="muted small">Descarga un resource script para lanzarlo manualmente en msfconsole.</span>
+      </form>
+      {% if msf_exploit_enabled %}
+      <form method="post" action="/scans/{{ scan.id }}/msf/exploit" class="stack"
+            onsubmit="return confirm('Vas a lanzar el exploit {{ item.module }} contra {{ item.host }}. Continuar?')">
+        <input type="hidden" name="host" value="{{ item.host }}">
+        <input type="hidden" name="port" value="{{ item.port or '' }}">
+        <input type="hidden" name="module" value="{{ item.module }}">
+        <label class="inline small"><input type="checkbox" name="authorized" value="1" required> Objetivo autorizado</label>
+        <button class="danger" type="submit" {{ 'disabled' if not msf_available or (enrichment.get('metasploit-exploit') and enrichment.get('metasploit-exploit').status == 'running') }}>Explotar</button>
+      </form>
+      {% else %}
+      <span class="muted small">Explotacion directa deshabilitada. Define <code>MEDSCAN_ENABLE_EXPLOIT=1</code> si necesitas habilitarla en laboratorio.</span>
+      {% endif %}
+      {% else %}
+      <span class="muted small">No explotable desde el panel</span>
+      {% endif %}
+    </td>
+  </tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+{% else %}
+<p class="muted small">Sin veredictos guardados. Ejecuta la verificacion con Metasploit para poblar esta seccion.</p>
+{% endif %}
+
+<h2>Ejecuciones de explotacion</h2>
+<p class="small muted">Historial auditable de acciones de explotacion lanzadas desde el panel. La verificacion MSF se conserva aparte.</p>
+{% if exploit_runs %}
+<div class="card" style="padding:0">
+<table>
+  <thead><tr><th>Estado</th><th>Objetivo</th><th>Modulo</th><th>Evidencia</th><th>Artefactos</th></tr></thead>
+  <tbody>
+  {% for run in exploit_runs %}
+  <tr>
+    <td><span class="badge {{ msf_result_slug(run.result or 'unknown') }}">{{ run.result or run.status }}</span><br><span class="small muted">{{ run.status }}</span></td>
+    <td class="mono small">{{ run.host }}{% if run.port %}:{{ run.port }}/{{ run.protocol }}{% endif %}</td>
+    <td><span class="small">{{ run.module }}</span><br><span class="muted small">{{ run.engine }} · {{ run.action }}</span></td>
+    <td><pre class="evidence">{{ run.detail or 'Sin detalle guardado.' }}</pre></td>
+    <td class="mono small">RC: {{ run.rc_path or '-' }}<br>Log: {{ run.log_path or '-' }}{% if run.authorized_by %}<br>Autorizado por: {{ run.authorized_by }}{% endif %}</td>
+  </tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+{% else %}
+<p class="muted small">Sin ejecuciones de explotacion registradas.</p>
+{% endif %}
 
 <h2>Actualizaciones Windows</h2>
 {% if patch_statuses %}
@@ -287,7 +443,7 @@ Estado: <span class="status {{ 'done' if patch.status == 'current' else 'failed'
 {% endblock %}
 
 {% block scripts %}
-{% if scan.status in ('running', 'queued') or (enrichment.get('nvd') and enrichment.nvd.status == 'running') or (enrichment.get('windows') and enrichment.windows.status == 'running') or (enrichment.get('linux') and enrichment.linux.status == 'running') or (enrichment.get('msrc') and enrichment.msrc.status == 'running') %}
+{% if scan.status in ('running', 'queued') or (enrichment.get('nvd') and enrichment.nvd.status == 'running') or (enrichment.get('windows') and enrichment.windows.status == 'running') or (enrichment.get('linux') and enrichment.linux.status == 'running') or (enrichment.get('msrc') and enrichment.msrc.status == 'running') or (enrichment.get('exploitdb') and enrichment.exploitdb.status == 'running') or (enrichment.get('metasploit') and enrichment.metasploit.status == 'running') or (enrichment.get('metasploit-exploit') and enrichment.get('metasploit-exploit').status == 'running') %}
 <script>
   // Sondeo del estado mientras el escaneo corre. Cuando termina, se recarga
   // una vez para pintar los resultados completos.

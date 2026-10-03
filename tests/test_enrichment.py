@@ -7,7 +7,16 @@ import sqlite3
 
 import pytest
 
-from medscan import compliance, db, linux_inventory, msrc, nvd, threat_intel, windows_inventory
+from medscan import (
+    compliance,
+    db,
+    exploitdb,
+    linux_inventory,
+    msrc,
+    nvd,
+    threat_intel,
+    windows_inventory,
+)
 from medscan.authenticated_checks import linux_findings, windows_findings
 from medscan.models import Assessment, Port, Service, Severity
 from medscan.nmap_parser import parse_string
@@ -104,6 +113,42 @@ def test_priorizacion_cisa_kev_y_epss_usa_cache():
     threat_intel.kev_catalog(fetch_json=fetch)
     threat_intel.epss_scores({"CVE-2024-12345"}, fetch_json=fetch)
     assert len(calls) == 2
+
+
+def test_exploitdb_cruza_cve_con_searchsploit(nmap_xml, tmp_path):
+    path = tmp_path / "scan.xml"
+    path.write_text(nmap_xml, encoding="utf-8")
+    from medscan import analysis, nmap_parser
+
+    run = nmap_parser.parse_file(path)
+    scan_id = db.create_scan(
+        name="ms17", targets="192.168.1.10", profile="vulnerabilidades"
+    )
+    db.save_results(scan_id, run, analysis.analyze(run, target_is_private=True), 80)
+
+    def fake_searchsploit(cve_id: str) -> dict:
+        assert cve_id == "CVE-2017-0143"
+        return {
+            "RESULTS_EXPLOIT": [
+                {
+                    "Title": "Microsoft Windows SMB MS17-010 Remote Code Execution",
+                    "EDB-ID": "42315",
+                    "Date": "2017-05-01",
+                    "Type": "remote",
+                    "Platform": "windows",
+                    "Path": "/usr/share/exploitdb/exploits/windows/remote/42315.py",
+                }
+            ]
+        }
+
+    assert exploitdb.enrich_scan(scan_id, runner=fake_searchsploit) == 1
+    rows = db.get_exploitdb_results(scan_id)
+    assert rows[0]["cve_id"] == "CVE-2017-0143"
+    assert rows[0]["edb_id"] == "42315"
+    assert rows[0]["url"] == "https://www.exploit-db.com/exploits/42315"
+    assert rows[0]["context_score"] >= 45
+    assert "192.168.1.10:445" in rows[0]["matched_context"]
+    assert db.get_enrichment_statuses(scan_id)["exploitdb"]["status"] == "done"
 
 
 def test_msrc_compara_producto_y_build_acumulativo_con_cache():

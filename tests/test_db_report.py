@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import io
+import json
+import zipfile
 from pathlib import Path
 
-from medscan import analysis, db, report, service
+from medscan import analysis, cli, db, export, report, service
 from medscan.models import Severity
 from medscan.nmap_parser import parse_string
 from medscan.nmap_runner import NmapExecution, build_argv, explain_failure
@@ -105,6 +108,100 @@ def test_informe_html(nmap_xml, tmp_path):
 
     destino = report.write_report(scan_id, tmp_path / "informe.html")
     assert Path(destino).read_text(encoding="utf-8") == html
+
+
+def test_export_json_y_csv(nmap_xml):
+    scan_id = escaneo_guardado(nmap_xml)
+
+    payload = json.loads(export.render_json(scan_id))
+    assert payload["schema_version"] == 1
+    assert payload["scan"]["id"] == scan_id
+    assert payload["summary"]["open_ports"] == 4
+    assert payload["hosts"][0]["ports"][0]["scripts"] == []
+    assert any("CVE-2017-0143" in item["cves"] for item in payload["findings"])
+    assert "attack_paths" in payload
+
+    csv_text = export.render_findings_csv(scan_id)
+    assert csv_text.startswith("scan_id,host,port,protocol")
+    assert "CVE-2017-0143" in csv_text
+    assert "Telnet" in csv_text
+
+
+def test_cli_export_json_y_csv(nmap_xml, tmp_path):
+    scan_id = escaneo_guardado(nmap_xml)
+    json_path = tmp_path / "scan.json"
+    csv_path = tmp_path / "findings.csv"
+
+    assert cli.main(["export", str(scan_id), "-f", "json", "-o", str(json_path)]) == 0
+    assert cli.main(["export", str(scan_id), "-f", "csv", "-o", str(csv_path)]) == 0
+
+    assert json.loads(json_path.read_text(encoding="utf-8"))["scan"]["id"] == scan_id
+    assert "severity_label" in csv_path.read_text(encoding="utf-8")
+
+
+def test_cli_self_test_no_toca_red(capsys):
+    assert cli.main(["self-test"]) == 0
+    out = capsys.readouterr().out
+    assert "Self-test de Medscan" in out
+    assert "No se ha lanzado nmap" in out
+
+
+def test_export_bundle_incluye_entregables_y_artifacts_msf(nmap_xml, tmp_path):
+    scan_id = escaneo_guardado(nmap_xml)
+    raw = tmp_path / "datos" / "raw"
+    raw.mkdir(parents=True)
+    rc_path = raw / "prepared.rc"
+    rc_path.write_text("use exploit/example\n", encoding="utf-8")
+    outside = tmp_path / "outside.log"
+    outside.write_text("no debe exportarse", encoding="utf-8")
+    db.create_exploit_run(
+        scan_id,
+        host="192.168.1.10",
+        port=445,
+        engine="metasploit",
+        module="exploit/example",
+        action="prepare_rc",
+        rc_path=str(rc_path),
+        log_path=str(outside),
+        authorized_by="Hugo",
+    )
+
+    bundle = tmp_path / "entrega.zip"
+    assert cli.main(["export", str(scan_id), "-f", "bundle", "-o", str(bundle)]) == 0
+
+    with zipfile.ZipFile(bundle) as zf:
+        names = set(zf.namelist())
+        assert f"medscan-{scan_id:05d}/report.html" in names
+        assert f"medscan-{scan_id:05d}/scan.json" in names
+        assert f"medscan-{scan_id:05d}/findings.csv" in names
+        assert f"medscan-{scan_id:05d}/metasploit/prepared.rc" in names
+        assert all("outside.log" not in name for name in names)
+
+
+def test_export_bundle_trunca_artifacts_grandes(nmap_xml, tmp_path):
+    scan_id = escaneo_guardado(nmap_xml)
+    raw = tmp_path / "datos" / "raw"
+    raw.mkdir(parents=True)
+    log_path = raw / "big.log"
+    log_path.write_text("0123456789ABCDEFGHIJ", encoding="utf-8")
+    db.create_exploit_run(
+        scan_id,
+        host="192.168.1.10",
+        port=445,
+        engine="metasploit",
+        module="exploit/example",
+        action="prepare_rc",
+        log_path=str(log_path),
+        authorized_by="Hugo",
+    )
+
+    bundle = export.render_bundle(scan_id, max_artifact_bytes=10)
+
+    with zipfile.ZipFile(io.BytesIO(bundle)) as zf:
+        data = zf.read(f"medscan-{scan_id:05d}/metasploit/big.log")
+    assert data.startswith(b"0123456789")
+    assert b"Artefacto truncado" in data
+    assert b"ABCDEFGHIJ" not in data
 
 
 def test_argv_de_nmap_pone_los_objetivos_al_final(tmp_path):

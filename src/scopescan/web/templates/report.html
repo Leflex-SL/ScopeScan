@@ -230,6 +230,7 @@ alta o critica:</p>
 {% if inventories.get(host.address) %}
 {% set inv = inventories[host.address] %}
 {% if inv.platform == 'linux' %}
+{% include 'linux_package_coverage.html' %}
 <p class="small"><strong>Inventario Linux autenticado:</strong>
 {{ inv.os_name }} {{ inv.os_version }}; kernel {{ inv.kernel }}; {{ inv.packages|length }} paquetes;
 {% if inv.security_updates_checked %}{{ inv.security_updates|length }} actualizaciones de seguridad pendientes{% else %}actualizaciones de seguridad sin evaluar{% endif %}.</p>
@@ -248,9 +249,9 @@ firma {{ 'obligatoria' if inv.smb_server.signing_required is sameas true else 'n
 {% if inv.rdp %}<p class="small">RDP: NLA
 {{ 'obligatoria' if inv.rdp.nla_required is sameas true else 'no obligatoria' if inv.rdp.nla_required is sameas false else 'sin dato' }}.</p>{% endif %}
 {% if inv.firewall_profiles %}<p class="small">Firewall:
-{% for profile in inv.firewall_profiles %}{{ profile.name }} {{ 'activo' if profile.active else 'inactivo' }}/{{ 'habilitado' if profile.enabled else 'deshabilitado' }}{{ ', ' if not loop.last }}{% endfor %}.</p>{% endif %}
-{% if inv.defender %}<p class="small">Defender: tiempo real {{ 'activo' if inv.defender.realtime_enabled else 'deshabilitado' }}; firmas de hace {{ inv.defender.signature_age_days }} dias.</p>{% endif %}
-<p class="small">UAC {{ 'habilitado' if inv.uac_enabled is sameas true else 'deshabilitado' if inv.uac_enabled is sameas false else 'sin dato' }}{% if inv.bitlocker %}; BitLocker {{ inv.bitlocker.protection_status }} en {{ inv.bitlocker.mount_point }}{% endif %}; Secure Boot {{ 'habilitado' if inv.secure_boot_enabled is sameas true else 'deshabilitado' if inv.secure_boot_enabled is sameas false else 'sin dato' }}{% if inv.guest_account %}; Guest {{ 'habilitada' if inv.guest_account.enabled else 'deshabilitada' }}{% endif %}.</p>
+{% for profile in inv.firewall_profiles %}{{ profile.name }} {{ 'activo' if profile.active is sameas true else 'inactivo' if profile.active is sameas false else 'sin dato' }}/{{ 'habilitado' if profile.enabled is sameas true else 'deshabilitado' if profile.enabled is sameas false else 'sin dato' }}{{ ', ' if not loop.last }}{% endfor %}.</p>{% endif %}
+{% if inv.defender %}<p class="small">Defender: tiempo real {{ 'activo' if inv.defender.realtime_enabled is sameas true else 'deshabilitado' if inv.defender.realtime_enabled is sameas false else 'sin dato' }}; firmas de hace {{ inv.defender.signature_age_days }} dias.</p>{% endif %}
+<p class="small">UAC {{ 'habilitado' if inv.uac_enabled is sameas true else 'deshabilitado' if inv.uac_enabled is sameas false else 'sin dato' }}{% if inv.bitlocker %}; BitLocker {{ inv.bitlocker.protection_status }} en {{ inv.bitlocker.mount_point }}{% endif %}; Secure Boot {{ 'habilitado' if inv.secure_boot_enabled is sameas true else 'deshabilitado' if inv.secure_boot_enabled is sameas false else 'sin dato' }}{% if inv.guest_account %}; Guest {{ 'habilitada' if inv.guest_account.enabled is sameas true else 'deshabilitada' if inv.guest_account.enabled is sameas false else 'sin dato' }}{% endif %}.</p>
 <p class="small mono">KB: {{ inv.updates | map(attribute='kb') | join(', ') or 'sin datos' }}</p>
 {% endif %}
 {% endif %}

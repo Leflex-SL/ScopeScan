@@ -12,13 +12,13 @@ donde va un escaneo de 65535 puertos que dura media hora.
 from __future__ import annotations
 
 import re
-import subprocess
 import threading
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
 from .config import find_nmap
+from .process_runner import run_process
 
 # "SYN Stealth Scan Timing: About 24.53% done; ETC: 20:15 (0:01:32 remaining)"
 PROGRESS_RE = re.compile(r"^(?P<task>.+?)\s+Timing:\s+About\s+(?P<pct>[\d.]+)%\s+done")
@@ -41,6 +41,8 @@ class NmapExecution:
     stdout: str
     stderr: str
     cancelled: bool = False
+    timed_out: bool = False
+    output_truncated: bool = False
 
     @property
     def command(self) -> str:
@@ -48,7 +50,7 @@ class NmapExecution:
 
     @property
     def ok(self) -> bool:
-        return self.returncode == 0 and not self.cancelled
+        return self.returncode == 0 and not (self.cancelled or self.timed_out)
 
 
 def build_argv(
@@ -81,98 +83,35 @@ def run(
 ) -> NmapExecution:
     """Lanza nmap y devuelve el resultado cuando termina.
 
-    `cancel` permite pararlo desde el panel: se comprueba entre lineas de salida.
+    `cancel` permite pararlo desde el panel: se comprueba periodicamente aunque el proceso no escriba.
     Al matar nmap el XML queda a medias, y el parser sabe recuperar lo escrito
     hasta ese punto.
     """
     xml_path = Path(argv[argv.index("-oX") + 1])
-    stdout_lines: list[str] = []
-    last_task = ""
-    cancelled = False
 
-    proc = subprocess.Popen(
-        argv,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        bufsize=1,
-    )
-
-    # stderr se lee en un hilo aparte: si nmap llena ese pipe mientras nosotros
-    # seguimos leyendo stdout, el proceso se bloquea esperando a que lo vaciemos.
-    stderr_chunks: list[str] = []
-
-    def drain_stderr() -> None:
-        if proc.stderr is not None:
-            stderr_chunks.extend(proc.stderr)
-
-    stderr_thread = threading.Thread(target=drain_stderr, daemon=True)
-    stderr_thread.start()
-
-    timer: threading.Timer | None = None
-    if timeout:
-        timer = threading.Timer(timeout, proc.kill)
-        timer.daemon = True
-        timer.start()
-
-    try:
-        assert proc.stdout is not None
-        for raw_line in proc.stdout:
-            line = raw_line.rstrip()
-            if line:
-                stdout_lines.append(line)
-
-            if cancel is not None and cancel.is_set():
-                cancelled = True
-                _terminate(proc)
-                break
-
-            if progress is None:
-                continue
-
-            match = PROGRESS_RE.match(line)
-            if match:
-                last_task = match.group("task").strip()
-                etc = ETC_RE.search(line)
-                task = f"{last_task} ({etc.group('remaining')} restantes)" if etc else last_task
-                progress(float(match.group("pct")), task)
-                continue
-
+    def on_line(line: str) -> None:
+        if progress is None:
+            return
+        match = PROGRESS_RE.match(line)
+        if match:
+            task = match.group("task").strip()
+            etc = ETC_RE.search(line)
+            if etc:
+                task = f"{task} ({etc.group('remaining')} restantes)"
+            progress(float(match.group("pct")), task)
+        else:
             stats = STATS_RE.match(line)
             if stats:
-                last_task = stats.group("task").strip()
-                progress(-1.0, last_task)
-    finally:
-        if timer:
-            timer.cancel()
+                progress(-1.0, stats.group("task").strip())
 
-    proc.wait()
-    stderr_thread.join(timeout=5)
-    stderr = "".join(stderr_chunks)
-
-    return NmapExecution(
-        argv=argv,
-        xml_path=xml_path,
-        returncode=proc.returncode,
-        stdout="\n".join(stdout_lines),
-        stderr=stderr.strip(),
-        cancelled=cancelled,
-    )
-
-
-def _terminate(proc: subprocess.Popen) -> None:
-    """Corta nmap dandole margen a cerrar antes de matarlo."""
-    proc.terminate()
-    try:
-        proc.wait(timeout=10)
-    except subprocess.TimeoutExpired:
-        proc.kill()
-
+    result = run_process(argv, cancel=cancel, timeout=timeout, on_line=on_line)
+    return NmapExecution(argv, xml_path, result.returncode, result.stdout, result.stderr,
+                         result.cancelled, result.timed_out, result.output_truncated)
 
 def explain_failure(execution: NmapExecution) -> str:
     """Traduce el fallo de nmap a algo accionable."""
+    if execution.timed_out:
+        return "Tiempo maximo de ejecucion agotado; resultados parciales conservados."
     err = execution.stderr.lower()
     if "requires root privileges" in err or "operation not permitted" in err:
         return (

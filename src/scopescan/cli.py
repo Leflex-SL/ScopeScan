@@ -252,8 +252,16 @@ def cmd_report(args: argparse.Namespace) -> int:
 
 
 def cmd_export(args: argparse.Namespace) -> int:
+    if args.format == "bundle" and not args.output:
+        print("El formato bundle exige -o/--output para escribir un ZIP.", file=sys.stderr)
+        return 2
     db.init_db()
     try:
+        if args.format == "bundle":
+            destino = Path(args.output)
+            export.write_bundle(args.scan_id, destino)
+            print(f"Exportacion escrita en {destino.resolve()}")
+            return 0
         if args.format == "json":
             content: str | bytes = export.render_json(args.scan_id)
             binary = False
@@ -497,6 +505,7 @@ def cmd_serve(args: argparse.Namespace) -> int:
         port=args.port,
         reload=args.reload,
         log_level="info",
+        proxy_headers=False,
     )
     return 0
 

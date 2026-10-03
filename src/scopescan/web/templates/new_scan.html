@@ -10,7 +10,7 @@
 <div class="notice error">nmap no esta disponible; el escaneo fallara hasta que lo instales.</div>
 {% endif %}
 
-<form class="stack card" method="post" action="/scans">
+<form class="stack card" method="post" action="/scans"><input type="hidden" name="csrf_token" value="{{ request.state.csrf_token }}">
   <label>
     <span>Objetivo (IP, rango CIDR, rango de octetos o nombre de host)</span>
     <input type="text" name="targets" id="targets" value="{{ targets }}"

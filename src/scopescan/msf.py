@@ -33,14 +33,14 @@ class MsfError(RuntimeError):
     """La verificacion con Metasploit no se pudo completar."""
 
 
-def _cve_map(scan_id: int) -> dict[tuple[str, int], set[str]]:
-    """CVE asociados a cada (host, puerto) por el escaneo (NSE) y por NVD."""
-    out: dict[tuple[str, int], set[str]] = defaultdict(set)
+def _cve_map(scan_id: int) -> dict[tuple[str, int, str], set[str]]:
+    """CVE asociados a cada endpoint por el escaneo (NSE) y por NVD."""
+    out: dict[tuple[str, int, str], set[str]] = defaultdict(set)
     for row in db.get_findings(scan_id):
         if row["port"]:
-            out[(row["host"], int(row["port"]))].update(db.row_list(row["cves"]))
+            out[(row["host"], int(row["port"]), row["protocol"])].update(db.row_list(row["cves"]))
     for row in db.get_cve_candidates(scan_id):
-        out[(row["host"], int(row["port"]))].add(row["cve_id"])
+        out[(row["host"], int(row["port"]), row["protocol"])].add(row["cve_id"])
     return out
 
 
@@ -59,10 +59,15 @@ def plan_scan(scan_id: int) -> list[tuple[str, int, str, MsfModule]]:
         for port in ports_by_host.get(host_id, []):
             portid = int(port["portid"])
             service = port["service_name"] or ""
+            protocol = port["protocol"]
+            # The current execution/catalog contract supports TCP only.
+            if protocol != "tcp":
+                continue
             modules = msf_modules.candidates_for(
                 service_name=service,
                 product=port["product"] or "",
-                cve_ids=sorted(cves.get((address, portid), set())),
+                cve_ids=sorted(cves.get((address, portid, protocol), set())),
+                protocol=protocol,
             )
             for mod in modules:
                 plan.append((address, portid, service, mod))
@@ -105,6 +110,17 @@ def verify_scan(
             )
 
     plan = plan_scan(scan_id)
+    # Saved targets do not prove that discovered/resolved addresses are private.
+    # Revalidate every concrete host before writing scripts or running a motor.
+    for address, _portid, _service, _mod in plan:
+        try:
+            target = parse_target(address)
+        except InvalidTarget as exc:
+            raise MsfScopeError(f"Host del plan invalido: {address}") from exc
+        if target.kind != "ip":
+            raise MsfScopeError("El plan Metasploit requiere direcciones IP concretas.")
+        if not target.private and not (allow_public and authorized_by.strip()):
+            raise MsfScopeError(f"{address} esta fuera de rango privado; requiere autorizacion.")
     if not plan:
         db.set_enrichment_status(scan_id, ENRICH_KIND, "done")
         return 0
@@ -120,6 +136,8 @@ def verify_scan(
 
     db.set_enrichment_status(scan_id, ENRICH_KIND, "running")
     results: list[dict[str, object]] = []
+    execution_errors: list[str] = []
+    was_cancelled = False
     raw = raw_dir()
 
     try:
@@ -140,6 +158,11 @@ def verify_scan(
 
             argv = msf_runner.build_argv(rc_path, log_path=log_path)
             execution = msf_runner.run(argv, cancel=cancel, progress=progress)
+            was_cancelled = was_cancelled or execution.cancelled
+            if not execution.ok or execution.output_truncated:
+                execution_errors.append(_execution_failure(execution))
+            if not log_path.exists():
+                log_path.write_text(execution.output, encoding="utf-8")
             results.extend(
                 _rows_from(scan_id, mod, portid, hosts, execution)
             )
@@ -151,8 +174,17 @@ def verify_scan(
         raise MsfError(f"No se pudo lanzar msfconsole: {exc}") from exc
 
     saved = db.save_msf_results(scan_id, results)  # type: ignore[arg-type]
-    status = "cancelled" if (cancel is not None and cancel.is_set()) else "done"
-    db.set_enrichment_status(scan_id, ENRICH_KIND, status)
+    error_rows = sum(result["result"] == msf_modules.ERROR for result in results)
+    if error_rows and not execution_errors:
+        execution_errors = [str(result.get("detail") or "Verificacion sin evidencia concluyente")
+                            for result in results if result["result"] == msf_modules.ERROR]
+    if was_cancelled or (cancel is not None and cancel.is_set()):
+        status = "cancelled"
+    elif error_rows:
+        status = "failed" if error_rows == len(results) else "partial"
+    else:
+        status = "done"
+    db.set_enrichment_status(scan_id, ENRICH_KIND, status, "; ".join(execution_errors)[:500])
     return saved
 
 
@@ -172,6 +204,8 @@ def exploitable_results(scan_id: int) -> list[dict[str, object]]:
     for row in db.get_msf_results(scan_id):
         mod = msf_modules.module_by_path(row["module"])
         if mod is None or not mod.exploitable:
+            continue
+        if row["protocol"] != "tcp":
             continue
         if (row["host"], row["port"], row["module"]) in exploited:
             continue
@@ -195,7 +229,7 @@ def _validated_exploit_context(
     port: int | None,
     module_path: str,
     allow_public: bool = False,
-) -> tuple[object, MsfModule]:
+) -> tuple[object, MsfModule, int]:
     """Valida que un host/modulo puede entrar en la fase de explotacion.
 
     Triple-gate antes de disparar nada:
@@ -216,15 +250,28 @@ def _validated_exploit_context(
     if host not in {h["address"] for h in db.get_hosts(scan_id)}:
         raise MsfScopeError("El host no pertenece a este escaneo.")
 
-    verified = any(
-        r["module"] == module_path
+    verified_ports = {
+        int(r["port"])
+        for r in db.get_msf_results(scan_id)
+        if r["port"] is not None
+        and r["protocol"] == "tcp"
+        and r["module"] == module_path
         and r["host"] == host
         and r["result"] in (msf_modules.VULNERABLE, msf_modules.LIKELY)
-        for r in db.get_msf_results(scan_id)
-    )
-    if not verified:
+    }
+    if port is None:
+        if len(verified_ports) != 1:
+            raise MsfScopeError("Selecciona un puerto TCP verificado de forma inequivoca.")
+        effective_port = next(iter(verified_ports))
+    else:
+        effective_port = port
+    if isinstance(effective_port, bool) or not isinstance(effective_port, int) or not (
+        1 <= effective_port <= 65535
+    ):
+        raise MsfScopeError("El puerto debe estar entre 1 y 65535.")
+    if effective_port not in verified_ports:
         raise MsfScopeError(
-            "No hay verificacion previa vulnerable para ese host/modulo. "
+            "No hay verificacion previa vulnerable para ese host/puerto TCP/modulo. "
             "Ejecuta primero la verificacion Metasploit."
         )
 
@@ -232,6 +279,8 @@ def _validated_exploit_context(
         target = parse_target(host)
     except InvalidTarget as exc:  # pragma: no cover - host ya validado al escanear
         raise MsfError(str(exc)) from exc
+    if target.kind != "ip":
+        raise MsfScopeError("La explotacion requiere una direccion IP concreta.")
     if not target.private and not allow_public:
         raise MsfScopeError(
             f"{host} esta fuera de rango privado. Explotar un objetivo publico exige "
@@ -240,7 +289,7 @@ def _validated_exploit_context(
     if not target.private and allow_public and not (row["authorized_by"] or "").strip():
         raise MsfScopeError("Para explotar un objetivo publico debe constar quien autoriza.")
 
-    return row, mod
+    return row, mod, effective_port
 
 
 def prepare_exploit_resource(
@@ -257,7 +306,7 @@ def prepare_exploit_resource(
     el artefacto listo y auditable, y el operador lo lanza manualmente en su
     msfconsole cuando proceda.
     """
-    row, mod = _validated_exploit_context(
+    row, mod, port = _validated_exploit_context(
         scan_id,
         host=host,
         port=port,
@@ -308,7 +357,7 @@ def exploit_target(
     progress: msf_runner.ProgressCallback | None = None,
 ) -> str:
     """Lanza un exploit concreto contra un host. Devuelve el resultado (EXPLOITED/FAILED)."""
-    row, mod = _validated_exploit_context(
+    row, mod, port = _validated_exploit_context(
         scan_id,
         host=host,
         port=port,
@@ -349,14 +398,29 @@ def exploit_target(
         db.finish_exploit_run(run_id, status="failed", result=msf_modules.ERROR, detail=str(exc))
         raise
 
-    if not execution.ok and not execution.output.strip():
-        result, evidence = msf_modules.ERROR, msf_runner.explain_failure(execution)
+    if not log_path.exists():
+        log_path.write_text(execution.output, encoding="utf-8")
+    if not execution.ok or execution.output_truncated:
+        result, evidence = msf_modules.ERROR, _execution_failure(execution)
+        status = "cancelled" if execution.cancelled else "failed"
     else:
         result, evidence = msf_modules.parse_exploit_output(execution.output)
-
-    status = "cancelled" if execution.cancelled else "done"
+        status = "done"
     db.finish_exploit_run(run_id, status=status, result=result, detail=evidence[:500])
     return result
+
+
+def _execution_failure(execution: msf_runner.MsfExecution) -> str:
+    reasons = []
+    if execution.cancelled:
+        reasons.append("Cancelado por el usuario")
+    if execution.timed_out:
+        reasons.append("Tiempo maximo de ejecucion agotado")
+    if execution.output_truncated:
+        reasons.append("Salida truncada; evidencia incompleta")
+    if execution.returncode != 0:
+        reasons.append(f"msfconsole termino con codigo {execution.returncode}")
+    return "; ".join(reasons) or msf_runner.explain_failure(execution)
 
 
 def _rows_from(
@@ -367,18 +431,21 @@ def _rows_from(
     execution: msf_runner.MsfExecution,
 ) -> list[dict[str, object]]:
     """Convierte la salida de un modulo en filas para msf_results."""
-    if not execution.ok and not execution.output.strip():
+    if not execution.ok or execution.output_truncated:
         return [
             {
                 "host": host, "port": portid, "protocol": "tcp",
                 "module": module.path, "module_kind": module.kind, "action": module.action,
                 "result": msf_modules.ERROR,
-                "detail": msf_runner.explain_failure(execution)[:500],
+                "detail": (
+                    "Salida truncada; no se puede atribuir un veredicto completo al endpoint."
+                    if execution.output_truncated else msf_runner.explain_failure(execution)[:500]
+                ),
             }
             for host in hosts
         ]
 
-    verdicts = msf_modules.parse_output(execution.output, default_hosts=hosts)
+    verdicts = msf_modules.parse_output(execution.output, default_hosts=hosts, expected_port=portid)
     rows: list[dict[str, object]] = []
     for host in hosts:
         v = verdicts.get(host)

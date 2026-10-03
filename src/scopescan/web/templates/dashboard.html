@@ -20,6 +20,7 @@
 {% endif %}
 
 <h2>Capacidades</h2>
+<form method="post" action="/api/environment/refresh"><input type="hidden" name="csrf_token" value="{{ request.state.csrf_token }}"><button>Refrescar entorno</button></form>
 <div class="grid cols-4">
   <div class="stat">
     <div class="value"><span class="badge {{ 'low' if env.ready else 'critical' }}">{{ 'OK' if env.ready else 'NO' }}</span></div>
@@ -49,7 +50,7 @@
   <div class="stat">
     <div class="value"><span class="badge {{ 'low' if env.panel_auth_enabled else 'info' }}">{{ 'ON' if env.panel_auth_enabled else 'LOCAL' }}</span></div>
     <div class="label">Auth panel</div>
-    <div class="small muted">{{ 'Basic Auth para clientes no locales' if env.panel_auth_enabled else 'Solo loopback' }}</div>
+    <div class="small muted">{{ 'Basic Auth para todos los clientes' if env.panel_auth_enabled else 'Solo loopback' }}</div>
   </div>
 </div>
 
@@ -71,6 +72,12 @@
 </div>
 
 <h2>Historico</h2>
+<form method="get" class="actions">
+  <input name="q" value="{{ q }}" placeholder="Buscar nombre, objetivo o hallazgo">
+  {% if min_severity is defined %}<input type="hidden" name="min_severity" value="{{ min_severity }}">{% endif %}
+  <button>Buscar</button>
+</form>
+<p class="small muted">Pagina {{ page }} · {{ scans|length if scans is defined else findings|length }} resultados</p>
 <div class="card" style="padding:0">
   {% if scans %}
   <table>
@@ -104,6 +111,10 @@
   {% else %}
   <div class="empty">Todavia no hay escaneos. <a href="/scans/new">Lanza el primero</a>.</div>
   {% endif %}
+</div>
+<div class="actions">
+{% if page > 1 %}<a href="?{{ page_query }}&page={{ page - 1 }}">Anterior</a>{% endif %}
+{% if has_next %}<a href="?{{ page_query }}&page={{ page + 1 }}">Siguiente</a>{% endif %}
 </div>
 {% endblock %}
 

@@ -2,6 +2,7 @@
 <html lang="es">
 <head>
   <meta charset="utf-8">
+  <meta name="csrf-token" content="{{ request.state.csrf_token }}">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{% block title %}ScopeScan{% endblock %}</title>
   <link rel="stylesheet" href="/static/style.css">
@@ -20,6 +21,18 @@
   <main>
     {% block content %}{% endblock %}
   </main>
+  <script>
+  const csrfToken = document.querySelector('meta[name="csrf-token"]').content;
+  const panelFetch = window.fetch.bind(window);
+  window.fetch = (url, options = {}) => {
+    if (new URL(url, window.location.href).origin === window.location.origin &&
+        ['POST','PUT','PATCH','DELETE'].includes((options.method || 'GET').toUpperCase())) {
+      options.headers = new Headers(options.headers || {});
+      options.headers.set('X-CSRF-Token', csrfToken);
+    }
+    return panelFetch(url, options);
+  };
+  </script>
   {% block scripts %}{% endblock %}
 </body>
 </html>

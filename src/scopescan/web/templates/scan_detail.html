@@ -13,16 +13,16 @@
     </div>
     <div class="actions">
       {% if scan.status in ('running', 'queued') %}
-      <form method="post" action="/scans/{{ scan.id }}/cancel"><button class="danger">Cancelar</button></form>
+      <form method="post" action="/scans/{{ scan.id }}/cancel"><input type="hidden" name="csrf_token" value="{{ request.state.csrf_token }}"><button class="danger">Cancelar</button></form>
       {% else %}
-      <form method="post" action="/scans/{{ scan.id }}/rerun"><button>Repetir</button></form>
+      <form method="post" action="/scans/{{ scan.id }}/rerun"><input type="hidden" name="csrf_token" value="{{ request.state.csrf_token }}"><button>Repetir</button></form>
       <a class="btn" href="/scans/{{ scan.id }}/report" target="_blank">Informe</a>
       <a class="btn" href="/scans/{{ scan.id }}/export.json">JSON</a>
       <a class="btn" href="/scans/{{ scan.id }}/findings.csv">CSV</a>
       <a class="btn" href="/scans/{{ scan.id }}/bundle.zip">ZIP</a>
       {% endif %}
       <form method="post" action="/scans/{{ scan.id }}/delete"
-            onsubmit="return confirm('Se borrara el escaneo {{ scan.id }} y todos sus resultados. Continuar?')">
+            onsubmit="return confirm('Se borrara el escaneo {{ scan.id }} y todos sus resultados. Continuar?')"><input type="hidden" name="csrf_token" value="{{ request.state.csrf_token }}">
         <button class="danger">Borrar</button>
       </form>
     </div>
@@ -36,7 +36,7 @@
   {% if scan.error %}<div class="notice error" style="margin-top:12px">{{ scan.error }}</div>{% endif %}
   {% if scan.status == 'done' %}
   <div class="actions" style="margin-top:14px">
-    <form method="post" action="/scans/{{ scan.id }}/enrich/nvd">
+    <form method="post" action="/scans/{{ scan.id }}/enrich/nvd"><input type="hidden" name="csrf_token" value="{{ request.state.csrf_token }}">
       <button type="submit" {{ 'disabled' if enrichment.get('nvd') and enrichment.nvd.status == 'running' }}>Buscar CVE candidatas en NVD</button>
       {% if inventories.values() | selectattr('intel_me_firmware') | list %}
       <label class="inline small"><input type="checkbox" name="include_firmware" value="1"> Enviar tambien la version de firmware Intel ME del inventario</label>
@@ -45,7 +45,7 @@
     <span class="small muted">Se envian los CPE detectados a NVD. El firmware autenticado solo se envia si marcas la casilla. Las coincidencias no confirman vulnerabilidad.</span>
   </div>
   <div class="actions" style="margin-top:10px">
-    <form method="post" action="/scans/{{ scan.id }}/enrich/exploitdb">
+    <form method="post" action="/scans/{{ scan.id }}/enrich/exploitdb"><input type="hidden" name="csrf_token" value="{{ request.state.csrf_token }}">
       <button type="submit" {{ 'disabled' if not searchsploit_available or (enrichment.get('exploitdb') and enrichment.exploitdb.status == 'running') }}>Buscar PoC en Exploit-DB</button>
     </form>
     <span class="small muted">
@@ -54,14 +54,14 @@
   </div>
   {% if inventories.values() | rejectattr('platform', 'equalto', 'linux') | list %}
   <div class="actions" style="margin-top:10px">
-    <form method="post" action="/scans/{{ scan.id }}/enrich/msrc">
+    <form method="post" action="/scans/{{ scan.id }}/enrich/msrc"><input type="hidden" name="csrf_token" value="{{ request.state.csrf_token }}">
       <button type="submit" {{ 'disabled' if enrichment.get('msrc') and enrichment.msrc.status == 'running' }}>Evaluar parches Windows con MSRC</button>
     </form>
     <span class="small muted">Descarga el boletin mensual publico y compara producto, build y UBR. No envia el inventario a Microsoft.</span>
   </div>
   {% endif %}
   <div class="actions" style="margin-top:10px">
-    <form method="post" action="/scans/{{ scan.id }}/enrich/msf">
+    <form method="post" action="/scans/{{ scan.id }}/enrich/msf"><input type="hidden" name="csrf_token" value="{{ request.state.csrf_token }}">
       <button type="submit" {{ 'disabled' if not msf_available or (enrichment.get('metasploit') and enrichment.metasploit.status == 'running') }}>Verificar con Metasploit</button>
     </form>
     <span class="small muted">
@@ -247,7 +247,7 @@
     <td><pre class="evidence">{{ item.detail or 'Sin detalle guardado.' }}</pre></td>
     <td>
       {% if exploit.candidate %}
-      <form method="post" action="/scans/{{ scan.id }}/msf/exploit-rc" class="stack">
+      <form method="post" action="/scans/{{ scan.id }}/msf/exploit-rc" class="stack"><input type="hidden" name="csrf_token" value="{{ request.state.csrf_token }}">
         <input type="hidden" name="host" value="{{ item.host }}">
         <input type="hidden" name="port" value="{{ item.port or '' }}">
         <input type="hidden" name="module" value="{{ item.module }}">
@@ -257,7 +257,7 @@
       </form>
       {% if msf_exploit_enabled %}
       <form method="post" action="/scans/{{ scan.id }}/msf/exploit" class="stack"
-            onsubmit="return confirm('Vas a lanzar el exploit {{ item.module }} contra {{ item.host }}. Continuar?')">
+            onsubmit="return confirm('Vas a lanzar el exploit {{ item.module }} contra {{ item.host }}. Continuar?')"><input type="hidden" name="csrf_token" value="{{ request.state.csrf_token }}">
         <input type="hidden" name="host" value="{{ item.host }}">
         <input type="hidden" name="port" value="{{ item.port or '' }}">
         <input type="hidden" name="module" value="{{ item.module }}">
@@ -358,13 +358,13 @@ Estado: <span class="status {{ 'done' if patch.status == 'current' else 'failed'
     {% for state, count in extra.items() %} {{ count }} puertos {{ state }}.{% endfor %}
   </p>
   {% if scan.status == 'done' and host.state == 'up' %}
-  <form method="post" action="/scans/{{ scan.id }}/inventory/windows" class="actions">
+  <form method="post" action="/scans/{{ scan.id }}/inventory/windows" class="actions"><input type="hidden" name="csrf_token" value="{{ request.state.csrf_token }}">
     <input type="hidden" name="host" value="{{ host.address }}">
     <button type="submit" {{ 'disabled' if enrichment.get('windows') and enrichment.windows.status == 'running' }}>Inventario Windows autenticado</button>
     {% if host.address in ('127.0.0.1', '::1') %}<label class="inline small"><input type="checkbox" name="local" value="1"> Este es el equipo local</label>{% endif %}
   </form>
   <p class="small muted">Usa la identidad Windows actual por WinRM; no se guardan credenciales.</p>
-  <form method="post" action="/scans/{{ scan.id }}/inventory/linux" class="actions">
+  <form method="post" action="/scans/{{ scan.id }}/inventory/linux" class="actions"><input type="hidden" name="csrf_token" value="{{ request.state.csrf_token }}">
     <input type="hidden" name="host" value="{{ host.address }}">
     <input name="user" size="14" maxlength="64" placeholder="usuario SSH">
     <input name="port" type="number" min="1" max="65535" value="22" style="width:85px">
@@ -376,33 +376,27 @@ Estado: <span class="status {{ 'done' if patch.status == 'current' else 'failed'
   {% if inventories.get(host.address) %}
     {% set inv = inventories[host.address] %}
     {% if inv.platform == 'linux' %}
-    <p class="small"><strong>Inventario Linux autenticado:</strong> {{ inv.os_name }} {{ inv.os_version }}; kernel {{ inv.kernel }}. {{ inv.packages|length }} paquetes registrados; {% if inv.security_updates_checked %}{{ inv.security_updates|length }} actualizaciones de seguridad pendientes{% else %}actualizaciones de seguridad sin evaluar{% endif %}.</p>
+    {% include 'linux_package_coverage.html' %}
+    <p class="small"><strong>Inventario Linux autenticado:</strong> {{ inv.os_name }} {{ inv.os_version }}; kernel {{ inv.kernel }}. {{ inv.package_count }} paquetes registrados; {% if inv.security_updates_checked %}{{ inv.security_updates|length }} actualizaciones de seguridad pendientes{% else %}actualizaciones de seguridad sin evaluar{% endif %}.</p>
     {% if inv.sshd %}<p class="small">SSH: root {{ inv.sshd.permit_root_login or 'sin dato' }}; autenticacion por contrasena {{ inv.sshd.password_authentication or 'sin dato' }}.</p>{% endif %}
     <p class="small">Firewall {{ 'activo' if inv.firewall.active is sameas true else 'inactivo' if inv.firewall.active is sameas false else 'sin dato' }}; ASLR {{ inv.aslr if inv.aslr is not none else 'sin dato' }}; SELinux {{ inv.selinux or 'sin dato' }}; AppArmor {{ inv.apparmor or 'sin dato' }}.</p>
-    <details><summary>Ver paquetes instalados</summary><table><thead><tr><th>Paquete</th><th>Version</th></tr></thead><tbody>
-      {% for item in inv.packages %}<tr><td>{{ item.name }}</td><td>{{ item.version }}</td></tr>{% endfor %}
-    </tbody></table></details>
+    <a href="/scans/{{ scan.id }}/inventory/{{ host.address }}/packages">Ver paquetes instalados (paginado)</a>
     {% else %}
     <p class="small"><strong>Inventario autenticado:</strong> {{ inv.os_name }} {{ inv.os_version }} (build {{ inv.os_build }}{% if inv.ubr is not none %}.{{ inv.ubr }}{% endif %}).
       BIOS {{ inv.bios_version or 'sin dato' }}. Intel ME {{ inv.intel_me_firmware or 'sin dato' }}.
-      {{ inv.updates|length }} KB y {{ inv.software|length }} aplicaciones registradas.</p>
+      {{ inv.update_count }} KB y {{ inv.software_count }} aplicaciones registradas.</p>
     {% if inv.smb_server %}<p class="small">Servidor SMB: SMBv1
       {{ 'habilitado' if inv.smb_server.smb1_enabled is sameas true else 'deshabilitado' if inv.smb_server.smb1_enabled is sameas false else 'sin dato' }};
       firma {{ 'obligatoria' if inv.smb_server.signing_required is sameas true else 'no obligatoria' if inv.smb_server.signing_required is sameas false else 'sin dato' }}.</p>{% endif %}
     {% if inv.rdp %}<p class="small">RDP: NLA
       {{ 'obligatoria' if inv.rdp.nla_required is sameas true else 'no obligatoria' if inv.rdp.nla_required is sameas false else 'sin dato' }}.</p>{% endif %}
     {% if inv.firewall_profiles %}<p class="small">Firewall:
-      {% for profile in inv.firewall_profiles %}{{ profile.name }} {{ 'activo' if profile.active else 'inactivo' }}/{{ 'habilitado' if profile.enabled else 'deshabilitado' }}{{ ', ' if not loop.last }}{% endfor %}.</p>{% endif %}
-    {% if inv.defender %}<p class="small">Defender: tiempo real {{ 'activo' if inv.defender.realtime_enabled else 'deshabilitado' }}; firmas de hace {{ inv.defender.signature_age_days }} dias.</p>{% endif %}
-    <p class="small">UAC {{ 'habilitado' if inv.uac_enabled is sameas true else 'deshabilitado' if inv.uac_enabled is sameas false else 'sin dato' }}{% if inv.bitlocker %}; BitLocker {{ inv.bitlocker.protection_status }} en {{ inv.bitlocker.mount_point }}{% endif %}; Secure Boot {{ 'habilitado' if inv.secure_boot_enabled is sameas true else 'deshabilitado' if inv.secure_boot_enabled is sameas false else 'sin dato' }}{% if inv.guest_account %}; Guest {{ 'habilitada' if inv.guest_account.enabled else 'deshabilitada' }}{% endif %}.</p>
+      {% for profile in inv.firewall_profiles %}{{ profile.name }} {{ 'activo' if profile.active is sameas true else 'inactivo' if profile.active is sameas false else 'sin dato' }}/{{ 'habilitado' if profile.enabled is sameas true else 'deshabilitado' if profile.enabled is sameas false else 'sin dato' }}{{ ', ' if not loop.last }}{% endfor %}.</p>{% endif %}
+    {% if inv.defender %}<p class="small">Defender: tiempo real {{ 'activo' if inv.defender.realtime_enabled is sameas true else 'deshabilitado' if inv.defender.realtime_enabled is sameas false else 'sin dato' }}; firmas de hace {{ inv.defender.signature_age_days }} dias.</p>{% endif %}
+    <p class="small">UAC {{ 'habilitado' if inv.uac_enabled is sameas true else 'deshabilitado' if inv.uac_enabled is sameas false else 'sin dato' }}{% if inv.bitlocker %}; BitLocker {{ inv.bitlocker.protection_status }} en {{ inv.bitlocker.mount_point }}{% endif %}; Secure Boot {{ 'habilitado' if inv.secure_boot_enabled is sameas true else 'deshabilitado' if inv.secure_boot_enabled is sameas false else 'sin dato' }}{% if inv.guest_account %}; Guest {{ 'habilitada' if inv.guest_account.enabled is sameas true else 'deshabilitada' if inv.guest_account.enabled is sameas false else 'sin dato' }}{% endif %}.</p>
     {% if inv.intel_me_note %}<p class="small muted">{{ inv.intel_me_note }}</p>{% endif %}
     {% if inv.updates_note %}<p class="small muted">Parches: {{ inv.updates_note }}</p>{% endif %}
-    <details><summary>Ver KB y software instalado</summary>
-      <p class="small mono">KB: {{ inv.updates | map(attribute='kb') | join(', ') or 'sin datos' }}</p>
-      <table><thead><tr><th>Aplicacion</th><th>Version</th><th>Fabricante</th></tr></thead><tbody>
-      {% for item in inv.software %}<tr><td>{{ item.name }}</td><td>{{ item.version }}</td><td>{{ item.publisher }}</td></tr>{% endfor %}
-      </tbody></table>
-    </details>
+    <a href="/scans/{{ scan.id }}/inventory/{{ host.address }}/updates">Ver KB (paginado)</a> · <a href="/scans/{{ scan.id }}/inventory/{{ host.address }}/software">Ver software instalado (paginado)</a>
     {% endif %}
   {% endif %}
 

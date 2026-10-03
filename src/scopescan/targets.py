@@ -25,6 +25,13 @@ _HOSTNAME_RE = re.compile(
 # Forma con rangos por octeto tipo nmap: 10.0.0-255.1-254
 _OCTET_RANGE_RE = re.compile(r"^(\d{1,3}(-\d{1,3})?)(\.(\d{1,3}(-\d{1,3})?)){3}$")
 
+# Explicit scope policy: ipaddress.is_private also includes documentation and
+# reserved space, whose treatment changes between Python releases.
+_PRIVATE_NETWORKS = tuple(ipaddress.ip_network(value) for value in (
+    "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "127.0.0.0/8",
+    "169.254.0.0/16", "::1/128", "fc00::/7", "fe80::/10",
+))
+
 
 class InvalidTarget(ValueError):
     """El objetivo no es una IP, CIDR, rango u hostname valido."""
@@ -61,13 +68,20 @@ class TargetSet:
 
 
 def _is_private_net(net: ipaddress.IPv4Network | ipaddress.IPv6Network) -> bool:
-    return bool(net.is_private or net.is_loopback or net.is_link_local)
+    return any(net.version == allowed.version and net.subnet_of(allowed)
+               for allowed in _PRIVATE_NETWORKS)
+
+
+def _is_private_address(addr: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+    return any(addr.version == allowed.version and addr in allowed
+               for allowed in _PRIVATE_NETWORKS)
 
 
 def _parse_octet_range(raw: str) -> tuple[int, bool]:
     """Cuenta hosts de un objetivo con rangos por octeto y dice si es privado."""
     total = 1
     lows: list[int] = []
+    highs: list[int] = []
     for part in raw.split("."):
         if "-" in part:
             low_s, high_s = part.split("-", 1)
@@ -77,15 +91,22 @@ def _parse_octet_range(raw: str) -> tuple[int, bool]:
             total *= high - low + 1
         else:
             low = int(part)
+            high = low
             if not 0 <= low <= 255:
                 raise InvalidTarget(f"Octeto fuera de rango en '{raw}'")
         lows.append(low)
+        highs.append(high)
 
     try:
         first = ipaddress.ip_address(".".join(str(v) for v in lows))
     except ValueError as exc:  # pragma: no cover - lows siempre son 4 octetos validos
         raise InvalidTarget(str(exc)) from exc
-    return total, bool(first.is_private or first.is_loopback or first.is_link_local)
+    last = ipaddress.ip_address(".".join(str(v) for v in highs))
+    # Every selected address lies between these bounds. Checking containment
+    # in a single trusted block is conservative and independent of host count.
+    private = any(allowed.version == 4 and first in allowed and last in allowed
+                  for allowed in _PRIVATE_NETWORKS)
+    return total, private
 
 
 def parse_target(raw: str) -> Target:
@@ -110,7 +131,7 @@ def parse_target(raw: str) -> Target:
     except ValueError:
         pass
     else:
-        private = bool(addr.is_private or addr.is_loopback or addr.is_link_local)
+        private = _is_private_address(addr)
         return Target(raw=raw, kind="ip", hosts=1, private=private)
 
     if _OCTET_RANGE_RE.match(raw):

@@ -8,10 +8,17 @@ hallazgos para hojas de calculo.
 from __future__ import annotations
 
 import csv
+import hashlib
 import io
 import json
+import os
+import shutil
 import sqlite3
+import tempfile
+import unicodedata
 import zipfile
+from datetime import UTC, datetime
+from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from typing import Any
 
@@ -57,6 +64,11 @@ def _scan_or_raise(scan_id: int) -> sqlite3.Row:
 
 
 def scan_payload(scan_id: int) -> dict[str, Any]:
+    with db.read_snapshot():
+        return _scan_payload(scan_id)
+
+
+def _scan_payload(scan_id: int) -> dict[str, Any]:
     """Devuelve todo lo relevante de un escaneo en una estructura JSON estable."""
     scan = _scan_or_raise(scan_id)
     hosts = []
@@ -129,14 +141,23 @@ def scan_payload(scan_id: int) -> dict[str, Any]:
     return payload
 
 
-def render_json(scan_id: int) -> str:
+def render_json(scan_id: int, *, payload: dict[str, Any] | None = None) -> str:
     """JSON legible y determinista para guardar en disco o adjuntar."""
-    return json.dumps(scan_payload(scan_id), ensure_ascii=False, indent=2) + "\n"
+    return json.dumps(payload if payload is not None else scan_payload(scan_id), ensure_ascii=False, indent=2) + "\n"
 
 
-def render_findings_csv(scan_id: int) -> str:
+def _spreadsheet_cell(value: Any) -> Any:
+    if not isinstance(value, str):
+        return value
+    probe = value
+    while probe and (probe[0].isspace() or unicodedata.category(probe[0]) in {"Cc", "Cf"}):
+        probe = probe[1:]
+    return "'" + value if probe.startswith(("=", "+", "-", "@")) else value
+
+
+def render_findings_csv(scan_id: int, *, payload: dict[str, Any] | None = None) -> str:
     """CSV de hallazgos, compatible con Excel/LibreOffice."""
-    _scan_or_raise(scan_id)
+    payload = payload if payload is not None else scan_payload(scan_id)
     out = io.StringIO(newline="")
     fields = [
         "scan_id",
@@ -156,31 +177,72 @@ def render_findings_csv(scan_id: int) -> str:
     ]
     writer = csv.DictWriter(out, fieldnames=fields, extrasaction="ignore")
     writer.writeheader()
-    for finding in db.get_findings(scan_id):
-        row = exportable_row(finding)
+    for finding in payload["findings"]:
+        row = dict(finding)
         row["severity_label"] = Severity(int(row["severity"])).label
-        row["cves"] = ";".join(_loads(row.get("cves"), []))
-        writer.writerow(row)
+        row["cves"] = ";".join(row.get("cves", []))
+        writer.writerow({key: _spreadsheet_cell(value) for key, value in row.items()})
     return out.getvalue()
 
 
 def render_bundle(scan_id: int, *, max_artifact_bytes: int = MAX_BUNDLE_ARTIFACT_BYTES) -> bytes:
     """ZIP de entrega: informe HTML, JSON, CSV y artefactos MSF preparados."""
-    _scan_or_raise(scan_id)
-    out = io.BytesIO()
+    with tempfile.SpooledTemporaryFile(max_size=1_000_000, mode="w+b") as out:
+        _write_bundle(scan_id, out, max_artifact_bytes=max_artifact_bytes)
+        out.seek(0)
+        return out.read()
+
+
+def write_bundle(scan_id: int, destination: Path,
+                 *, max_artifact_bytes: int = MAX_BUNDLE_ARTIFACT_BYTES) -> Path:
+    destination = Path(destination)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    with destination.open("w+b") as out:
+        _write_bundle(scan_id, out, max_artifact_bytes=max_artifact_bytes)
+    return destination
+
+
+def spool_bundle(scan_id: int) -> Path:
+    """Managed temporary ZIP; the caller removes it after the response finishes."""
+    base = raw_dir() / "exports"
+    base.mkdir(parents=True, exist_ok=True)
+    fd, name = tempfile.mkstemp(prefix="bundle-", suffix=".zip", dir=base)
+    path = Path(name)
+    try:
+        with os.fdopen(fd, "w+b") as out:
+            _write_bundle(scan_id, out)
+    except BaseException:
+        path.unlink(missing_ok=True)
+        raise
+    return path
+
+
+def _write_bundle(scan_id: int, out,
+                  *, max_artifact_bytes: int = MAX_BUNDLE_ARTIFACT_BYTES) -> None:
+    payload = scan_payload(scan_id)
     with zipfile.ZipFile(out, "w", compression=zipfile.ZIP_DEFLATED) as zf:
         prefix = f"scopescan-{scan_id:05d}"
-        zf.writestr(f"{prefix}/report.html", report.render_report(scan_id))
-        zf.writestr(f"{prefix}/scan.json", render_json(scan_id))
-        zf.writestr(f"{prefix}/findings.csv", render_findings_csv(scan_id))
-        for artifact in _metasploit_artifacts(scan_id):
-            _write_limited_artifact(
-                zf,
-                artifact,
-                f"{prefix}/metasploit/{artifact.name}",
-                max_bytes=max_artifact_bytes,
-            )
-    return out.getvalue()
+        zf.writestr(f"{prefix}/report.html", report.render_report(scan_id, payload=payload))
+        zf.writestr(f"{prefix}/scan.json", render_json(scan_id, payload=payload))
+        zf.writestr(f"{prefix}/findings.csv", render_findings_csv(scan_id, payload=payload))
+        artifact_errors = []
+        for artifact in _metasploit_artifacts(scan_id, runs=payload["exploit_runs"]):
+            try:
+                _write_limited_artifact(zf, artifact, f"{prefix}/metasploit/{artifact.name}",
+                                        max_bytes=max_artifact_bytes)
+            except OSError as exc:
+                artifact_errors.append({"name": artifact.name, "error": type(exc).__name__})
+        entries = []
+        for name in zf.namelist():
+            digest = hashlib.sha256()
+            with zf.open(name) as source:
+                for chunk in iter(lambda: source.read(65536), b""):
+                    digest.update(chunk)
+            entries.append({"path": name, "sha256": digest.hexdigest(),
+                            "bytes": zf.getinfo(name).file_size})
+        manifest = evidence_manifest(payload, entries)
+        manifest["artifact_errors"] = artifact_errors
+        zf.writestr(f"{prefix}/manifest.json", json.dumps(manifest, ensure_ascii=False, indent=2))
 
 
 def _write_limited_artifact(
@@ -189,7 +251,8 @@ def _write_limited_artifact(
     """Incluye un artefacto sin permitir ZIPs enormes por logs gigantes."""
     size = path.stat().st_size
     if max_bytes <= 0 or size <= max_bytes:
-        zf.write(path, arcname)
+        with path.open("rb") as source, zf.open(arcname, "w") as target:
+            shutil.copyfileobj(source, target, length=65536)
         return
     with path.open("rb") as fh:
         chunk = fh.read(max_bytes)
@@ -200,12 +263,12 @@ def _write_limited_artifact(
     zf.writestr(arcname, chunk + note)
 
 
-def _metasploit_artifacts(scan_id: int) -> list[Path]:
+def _metasploit_artifacts(scan_id: int, *, runs: list[dict[str, Any]] | None = None) -> list[Path]:
     """Devuelve solo `.rc`/logs pertenecientes al raw_dir gestionado por scopescan."""
     base = raw_dir().resolve()
     artifacts: list[Path] = []
     seen: set[Path] = set()
-    for run in db.get_exploit_runs(scan_id):
+    for run in runs if runs is not None else db.get_exploit_runs(scan_id):
         for key in ("rc_path", "log_path"):
             raw_path = str(run[key] or "").strip()
             if not raw_path:
@@ -224,3 +287,27 @@ def _metasploit_artifacts(scan_id: int) -> list[Path]:
             artifacts.append(resolved)
             seen.add(resolved)
     return artifacts
+
+
+def evidence_manifest(payload: dict[str, Any], entries: list[dict[str, Any]]) -> dict[str, Any]:
+    try:
+        application_version = version("scopescan")
+    except PackageNotFoundError:
+        application_version = "unknown"
+    scan = payload["scan"]
+    return {
+        "schema_version": 1,
+        "scan_id": scan["id"],
+        "generated_at": datetime.now(UTC).isoformat(),
+        "application": {"name": "ScopeScan", "version": application_version},
+        "scan": {key: scan.get(key) for key in ("created_at", "started_at", "finished_at",
+                                                "status", "profile", "targets", "nmap_args", "raw_xml_path")},
+        "enrichment": payload["enrichment"],
+        "coverage": {"hosts": payload["summary"]["hosts"],
+                     "inventoried_hosts": sorted(payload["inventories"]),
+                     "missing": ["engine and feed versions unavailable in legacy scans",
+                                 "artifact timestamps unavailable when not recorded"]},
+        "artifacts": entries,
+        "hash_algorithm": "sha256",
+        "note": "Hashes identify included bytes. Truncated artifacts carry an explicit marker.",
+    }

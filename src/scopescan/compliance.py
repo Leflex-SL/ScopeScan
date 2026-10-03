@@ -230,8 +230,10 @@ def linux_controls(inventory: dict, open_tcp_ports: set[int]) -> list[dict[str, 
         ))
     controls.append(_control(
         "LINUX-REBOOT", "Sin reinicio pendiente tras actualizaciones",
-        "fail" if inventory.get("reboot_required") is True else "pass",
-        f"reboot_required = {bool(inventory.get('reboot_required'))}",
+        "unknown" if inventory.get("reboot_required") is None
+        else "fail" if inventory.get("reboot_required") is True else "pass",
+        "Sin dato concluyente" if inventory.get("reboot_required") is None
+        else f"reboot_required = {inventory['reboot_required']}",
         ["ENS RD 311/2022 art. 21"],
     ))
     checked = inventory.get("security_updates_checked") is True

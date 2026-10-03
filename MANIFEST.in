@@ -1,0 +1,5 @@
+include LICENSE SECURITY.md
+include requirements.lock requirements-dev.lock
+recursive-include docs *.md *.json
+recursive-include scripts *.py
+recursive-include tests *.py

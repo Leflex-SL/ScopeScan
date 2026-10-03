@@ -8,7 +8,7 @@ from datetime import datetime
 from pathlib import Path
 
 from . import analysis, db, nmap_parser, nmap_runner
-from .config import MAX_HOSTS_DEFAULT, NmapNotFound, is_privileged, raw_dir
+from .config import MAX_HOSTS_DEFAULT, NmapNotFound, is_privileged, raw_dir, scan_timeout
 from .models import Finding, NmapRun
 from .profiles import DEFAULT_PROFILE, get_profile
 from .targets import InvalidTarget, TargetSet, parse_targets
@@ -83,6 +83,11 @@ def execute(scan_id: int, *, cancel: threading.Event | None = None) -> None:
     row = db.get_scan(scan_id)
     if row is None:
         raise ValueError(f"No existe el escaneo {scan_id}")
+    if cancel is not None and cancel.is_set():
+        db.set_status(scan_id, "cancelled", error="Cancelado antes de empezar")
+        return
+    if not db.claim_scan_execution(scan_id):
+        return
 
     try:
         target_set = parse_targets(row["targets"], force=True)
@@ -117,7 +122,8 @@ def execute(scan_id: int, *, cancel: threading.Event | None = None) -> None:
         db.set_progress(scan_id, percent, task)
 
     try:
-        execution = nmap_runner.run(argv, progress=on_progress, cancel=cancel)
+        execution = nmap_runner.run(argv, progress=on_progress, cancel=cancel,
+                                    timeout=scan_timeout())
     except OSError as exc:
         db.set_status(scan_id, "failed", error=f"No se pudo lanzar nmap: {exc}")
         return

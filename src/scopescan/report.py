@@ -13,7 +13,7 @@ from pathlib import Path
 
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
-from . import attack_paths, db, nvd
+from . import db, nvd
 from .models import Assessment, Severity
 
 TEMPLATE_DIR = Path(__file__).resolve().parent / "web" / "templates"
@@ -38,41 +38,31 @@ def _cves(raw: str | None) -> list[str]:
         return []
 
 
-def render_report(scan_id: int) -> str:
-    scan = db.get_scan(scan_id)
-    if scan is None:
-        raise ValueError(f"No existe el escaneo {scan_id}")
-
-    findings = db.get_findings(scan_id)
-    counts = db.severity_counts(scan_id)
-    hosts = db.hosts_with_ports(scan_id)
-
-    # Resumen ejecutivo: los hallazgos que de verdad hay que mirar hoy.
-    prioritarios = [
-        f for f in findings
-        if f["severity"] >= int(Severity.HIGH) and f["assessment"] != "candidate"
-    ]
-
-    template = _environment().get_template("report.html")
-    return template.render(
-        scan=scan,
-        findings=findings,
-        prioritarios=prioritarios,
-        counts=counts,
-        hosts=hosts,
-        attack_paths=attack_paths.build(scan_id),
-        candidates=db.get_cve_candidates(scan_id),
-        exploitdb_results=db.get_exploitdb_results(scan_id),
-        exploit_runs=db.get_exploit_runs(scan_id),
-        controls=db.get_control_results(scan_id),
-        patch_statuses=db.get_windows_patch_statuses(scan_id),
-        patch_candidates=db.get_windows_patch_candidates(scan_id),
-        inventories=db.get_host_inventories(scan_id),
-        json=json,
-        cves=_cves,
-        scripts=db.row_scripts,
-        hostnames=db.row_list,
-        # Hora local a proposito: el informe lo lee una persona en su huso.
+def render_report(scan_id: int, *, payload: dict | None = None) -> str:
+    # Import locally to avoid the export/report module cycle.
+    from .export import scan_payload
+    payload = payload if payload is not None else scan_payload(scan_id)
+    scan = payload["scan"]
+    findings = [dict(f, cves=json.dumps(f["cves"])) for f in payload["findings"]]
+    hosts = []
+    for host in payload["hosts"]:
+        host = dict(host)
+        ports = [dict(port, scripts=json.dumps(port["scripts"]), cpes=json.dumps(port["cpes"]))
+                 for port in host.pop("ports")]
+        host["hostnames"] = json.dumps(host["hostnames"])
+        hosts.append((host, ports))
+    prioritarios = [f for f in findings if f["severity"] >= int(Severity.HIGH)
+                   and f["assessment"] != "candidate"]
+    controls = [dict(item, references_json=json.dumps(item["references"]))
+                for item in payload["controls"]]
+    return _environment().get_template("report.html").render(
+        scan=scan, findings=findings, prioritarios=prioritarios,
+        counts=payload["summary"]["severity_counts"], hosts=hosts,
+        attack_paths=payload["attack_paths"], candidates=payload["cve_candidates"],
+        exploitdb_results=payload["exploitdb_results"], exploit_runs=payload["exploit_runs"],
+        controls=controls, patch_statuses=payload["windows_patch_statuses"],
+        patch_candidates=payload["windows_patch_candidates"], inventories=payload["inventories"],
+        json=json, cves=_cves, scripts=db.row_scripts, hostnames=db.row_list,
         generated=datetime.now().strftime("%d/%m/%Y %H:%M"),  # noqa: DTZ005
         total_open=sum(len(ports) for _host, ports in hosts),
     )

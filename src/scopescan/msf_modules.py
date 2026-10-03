@@ -44,6 +44,7 @@ class MsfModule:
     payload: str = ""
     prerequisites: str = ""
     safety_note: str = ""
+    protocols: tuple[str, ...] = ("tcp",)
 
     @property
     def action(self) -> str:
@@ -160,7 +161,8 @@ def exploitable_catalog() -> list[MsfModule]:
 
 
 def candidates_for(
-    *, service_name: str, product: str, cve_ids: list[str] | tuple[str, ...] = ()
+    *, service_name: str, product: str, cve_ids: list[str] | tuple[str, ...] = (),
+    protocol: str = "tcp",
 ) -> list[MsfModule]:
     """Modulos aplicables a un puerto abierto.
 
@@ -177,7 +179,7 @@ def candidates_for(
             if cves & set(mod.cves):
                 found[mod.path] = mod
 
-    return list(found.values())
+    return [mod for mod in found.values() if protocol.lower() in mod.protocols]
 
 
 # --- Construccion del resource script ----------------------------------------
@@ -365,7 +367,9 @@ class HostVerdict:
     detail: str
 
 
-def parse_output(text: str, *, default_hosts: list[str] | None = None) -> dict[str, HostVerdict]:
+def parse_output(
+    text: str, *, default_hosts: list[str] | None = None, expected_port: int | None = None,
+) -> dict[str, HostVerdict]:
     """Resume la salida de un modulo en un veredicto por host.
 
     Si varias lineas hablan del mismo host, gana la de mayor rango (vulnerable >
@@ -381,6 +385,8 @@ def parse_output(text: str, *, default_hosts: list[str] | None = None) -> dict[s
             continue
         host = match.group("host")
         port = int(match.group("port")) if match.group("port") else None
+        if expected_port is not None and port is not None and port != expected_port:
+            continue
         prev = verdicts.get(host)
         if prev is None or _RANK[result] > _RANK[prev.result]:
             verdicts[host] = HostVerdict(host, port, result, match.group("msg").strip())

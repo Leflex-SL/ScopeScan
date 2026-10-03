@@ -5,6 +5,16 @@ data/
 *.egg-info/
 .pytest_cache/
 .ruff_cache/
+.cache/
+dist/
+build/
+.pytest_core_tmp/
 .pytest_tmp/
 .codex-test-temp*/
 .test-tmp/
+.test-tmp-*/
+.test-tmp-consolidate/
+.test-tmp-consolidate-all/
+.test-tmp-consolidate-process/
+.test-tmp-repairs*/
+data-consolidation-failed/

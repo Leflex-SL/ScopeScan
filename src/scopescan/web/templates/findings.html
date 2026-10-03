@@ -14,6 +14,12 @@
   <a href="?min_severity=4" class="{{ 'active' if min_severity == 4 }}">Solo criticas</a>
 </div>
 
+<form method="get" class="actions">
+  <input name="q" value="{{ q }}" placeholder="Buscar nombre, objetivo o hallazgo">
+  {% if min_severity is defined %}<input type="hidden" name="min_severity" value="{{ min_severity }}">{% endif %}
+  <button>Buscar</button>
+</form>
+<p class="small muted">Pagina {{ page }} · {{ scans|length if scans is defined else findings|length }} resultados</p>
 <div class="card" style="padding:0">
   {% if findings %}
   <table>
@@ -39,5 +45,9 @@
   {% else %}
   <div class="empty">No hay hallazgos en este nivel.</div>
   {% endif %}
+</div>
+<div class="actions">
+{% if page > 1 %}<a href="?{{ page_query }}&page={{ page - 1 }}">Anterior</a>{% endif %}
+{% if has_next %}<a href="?{{ page_query }}&page={{ page + 1 }}">Siguiente</a>{% endif %}
 </div>
 {% endblock %}

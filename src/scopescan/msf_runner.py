@@ -13,13 +13,13 @@ msfconsole se invoca con:
 
 from __future__ import annotations
 
-import subprocess
 import threading
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
 from .config import find_msfconsole
+from .process_runner import run_process
 
 # Un `check`/`run` puntual no deberia tardar tanto, pero el arranque de
 # msfconsole se come facil 30-60s la primera vez.
@@ -40,6 +40,8 @@ class MsfExecution:
     stdout: str
     stderr: str
     cancelled: bool = False
+    timed_out: bool = False
+    output_truncated: bool = False
 
     @property
     def command(self) -> str:
@@ -47,7 +49,7 @@ class MsfExecution:
 
     @property
     def ok(self) -> bool:
-        return self.returncode == 0 and not self.cancelled
+        return self.returncode == 0 and not (self.cancelled or self.timed_out)
 
     @property
     def output(self) -> str:
@@ -73,77 +75,19 @@ def run(
 ) -> MsfExecution:
     """Lanza msfconsole y devuelve el resultado cuando termina."""
     rc_path = Path(argv[argv.index("-r") + 1])
-    stdout_lines: list[str] = []
-    cancelled = False
+    def on_line(line: str) -> None:
+        if progress is not None and line.startswith(("[*]", "[+]", "[-]", "[!]")):
+            progress(line)
 
-    proc = subprocess.Popen(
-        argv,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        bufsize=1,
-    )
-
-    stderr_chunks: list[str] = []
-
-    def drain_stderr() -> None:
-        if proc.stderr is not None:
-            stderr_chunks.extend(proc.stderr)
-
-    stderr_thread = threading.Thread(target=drain_stderr, daemon=True)
-    stderr_thread.start()
-
-    timer: threading.Timer | None = None
-    if timeout:
-        timer = threading.Timer(timeout, proc.kill)
-        timer.daemon = True
-        timer.start()
-
-    try:
-        assert proc.stdout is not None
-        for raw_line in proc.stdout:
-            line = raw_line.rstrip()
-            if line:
-                stdout_lines.append(line)
-
-            if cancel is not None and cancel.is_set():
-                cancelled = True
-                _terminate(proc)
-                break
-
-            # Las lineas con prefijo [*]/[+]/[-] son el progreso visible del modulo.
-            if progress is not None and line.startswith(("[*]", "[+]", "[-]", "[!]")):
-                progress(line)
-    finally:
-        if timer:
-            timer.cancel()
-
-    proc.wait()
-    stderr_thread.join(timeout=5)
-    stderr = "".join(stderr_chunks)
-
-    return MsfExecution(
-        argv=argv,
-        rc_path=rc_path,
-        returncode=proc.returncode,
-        stdout="\n".join(stdout_lines),
-        stderr=stderr.strip(),
-        cancelled=cancelled,
-    )
-
-
-def _terminate(proc: subprocess.Popen) -> None:
-    proc.terminate()
-    try:
-        proc.wait(timeout=10)
-    except subprocess.TimeoutExpired:
-        proc.kill()
+    result = run_process(argv, cancel=cancel, timeout=timeout, on_line=on_line)
+    return MsfExecution(argv, rc_path, result.returncode, result.stdout, result.stderr,
+                        result.cancelled, result.timed_out, result.output_truncated)
 
 
 def explain_failure(execution: MsfExecution) -> str:
     """Traduce el fallo de msfconsole a algo accionable."""
+    if execution.timed_out:
+        return "Tiempo maximo de ejecucion agotado; resultados parciales conservados."
     err = (execution.stderr + execution.stdout).lower()
     if "could not connect to the database" in err or "postgresql" in err:
         return (

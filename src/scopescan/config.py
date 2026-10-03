@@ -6,6 +6,8 @@ import os
 import secrets
 import shutil
 import sys
+import threading
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -50,9 +52,24 @@ def _setting(name: str, default: str | None = None) -> str | None:
 def data_dir() -> Path:
     """Directorio de datos (BD, XML crudos, informes). Override: SCOPESCAN_DATA."""
     raw = _setting("DATA")
-    path = Path(raw).expanduser() if raw else PROJECT_ROOT / "data"
+    if raw:
+        path = Path(raw).expanduser()
+    elif (PROJECT_ROOT / "data").is_dir() or (PROJECT_ROOT / "pyproject.toml").is_file():
+        path = PROJECT_ROOT / "data"
+    elif sys.platform == "win32":
+        path = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local")) / "ScopeScan"
+    else:
+        path = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local" / "share")) / "scopescan"
     path.mkdir(parents=True, exist_ok=True)
     return path
+
+
+def scan_timeout() -> float:
+    """A total deadline applies even when Nmap is silent."""
+    value = float(_setting("SCAN_TIMEOUT", "3600"))
+    if not 0 < value <= 86400:
+        raise ValueError("SCOPESCAN_SCAN_TIMEOUT debe estar entre 0 y 86400 segundos")
+    return value
 
 
 def db_path() -> Path:
@@ -266,9 +283,11 @@ def panel_auth_matches(user: str, password: str) -> bool:
     if configured is None:
         return False
     expected_user, expected_password = configured
-    return secrets.compare_digest(user, expected_user) and secrets.compare_digest(
-        password, expected_password
+    user_matches = secrets.compare_digest(user.encode("utf-8"), expected_user.encode("utf-8"))
+    password_matches = secrets.compare_digest(
+        password.encode("utf-8"), expected_password.encode("utf-8")
     )
+    return user_matches & password_matches
 
 
 def is_privileged() -> bool:
@@ -309,7 +328,26 @@ class Environment:
         return self.searchsploit_path is not None
 
 
-def probe_environment() -> Environment:
+_environment_lock = threading.Lock()
+_environment_cache: tuple[float, tuple, Environment] | None = None
+ENVIRONMENT_CACHE_TTL = 30.0
+
+
+def probe_environment(*, refresh: bool = False) -> Environment:
+    global _environment_cache
+    signature = tuple(sorted((key, value) for key, value in os.environ.items()
+                             if key.startswith(("SCOPESCAN_", "MEDSCAN_")) or key == "PATH"))
+    with _environment_lock:
+        if not refresh and _environment_cache is not None:
+            checked, previous, environment = _environment_cache
+            if signature == previous and time.monotonic() - checked < ENVIRONMENT_CACHE_TTL:
+                return environment
+        environment = _probe_environment()
+        _environment_cache = (time.monotonic(), signature, environment)
+        return environment
+
+
+def _probe_environment() -> Environment:
     import subprocess
 
     path: str | None

@@ -39,8 +39,12 @@ Para actualizar una instalacion anterior, desinstala el paquete antiguo con
 es ahora `scopescan` y el paquete Python es `scopescan`. Las variables
 `SCOPESCAN_*` tienen prioridad sobre los alias anteriores `MEDSCAN_*`.
 Las credenciales del panel se leen juntas del mismo prefijo.
-Las instalaciones nuevas guardan el historial en `data/scopescan.sqlite3`;
-si solo existe `data/medscan.sqlite3`, se reutiliza para conservar los escaneos.
+Desde el checkout, el historial se guarda en `data/scopescan.sqlite3`. Una
+instalación fuera del checkout sin datos previos usa `%LOCALAPPDATA%/ScopeScan`
+en Windows o `$XDG_DATA_HOME/scopescan` en Unix (por defecto
+`~/.local/share/scopescan`). `SCOPESCAN_DATA` permite elegir el directorio;
+`MEDSCAN_DATA` sigue siendo compatible. Si solo existe `medscan.sqlite3` en ese
+directorio, se reutiliza para conservar los escaneos.
 Los informes ya exportados y las copias de seguridad conservan su contenido original.
 
 ScopeScan necesita **nmap instalado en el sistema**. En Windows:
@@ -59,8 +63,13 @@ Luego el proyecto:
 
 ```bash
 python -m venv .venv
-.venv\Scripts\python.exe -m pip install -e ".[dev]"
+.venv\Scripts\python.exe -m pip install --require-hashes -r requirements-dev.lock
+.venv\Scripts\python.exe -m pip install --no-deps --no-build-isolation -e .
+.venv\Scripts\python.exe -m pip check
 ```
+
+Los locks fijan las dependencias verificadas. Para instalar una rueda y actualizar
+los locks, consulta [Dependencias y CI](docs/dependencies-and-ci.md).
 
 Comprueba que todo está en su sitio:
 
@@ -80,10 +89,11 @@ Comprueba que todo está en su sitio:
 Abre <http://127.0.0.1:8000>. Desde ahí se lanzan escaneos, se sigue el progreso
 en vivo (nmap reporta el porcentaje cada 5 segundos), se filtran los hallazgos
 por severidad y se exporta el informe HTML, JSON completo o CSV de hallazgos.
-El panel solo acepta conexiones locales porque muestra inventarios autenticados
-y no tiene un sistema de inicio de sesión. Las acciones que cambian estado
-rechazan formularios enviados desde otro origen cuando el navegador incluye
-`Origin` o `Referer`.
+El launcher `serve` solo escucha en loopback. Si configuras usuario y contraseña
+del panel, Basic Auth se exige también a los clientes locales. Las escrituras de
+navegador requieren CSRF; Host y los orígenes admitidos se validan con listas
+independientes. Consulta [Seguridad del panel](docs/panel-security.md) para
+configurar autenticación, puertos, proxy y TLS.
 
 ### Línea de comandos
 
@@ -125,7 +135,9 @@ Variables utiles:
 | `SCOPESCAN_LHOST` | IP local que recibira el payload reverse de Metasploit |
 | `SCOPESCAN_LPORT` | Puerto local del payload reverse; por defecto `4444` |
 | `SCOPESCAN_SEARCHSPLOIT` | Ruta a `searchsploit` si no esta en `PATH` |
-| `SCOPESCAN_PANEL_USER` / `SCOPESCAN_PANEL_PASSWORD` | Basic Auth opcional para permitir clientes no locales |
+| `SCOPESCAN_PANEL_USER` / `SCOPESCAN_PANEL_PASSWORD` | Basic Auth para todos los clientes cuando se configura |
+| `SCOPESCAN_PANEL_HOSTS` | Nombres Host exactos adicionales admitidos |
+| `SCOPESCAN_PANEL_ORIGINS` | Lista completa de orígenes admitidos para escrituras de navegador |
 
 La integracion Exploit-DB solo guarda referencias de SearchSploit. No descarga
 ni ejecuta PoC; calcula una relevancia contextual por puerto, servicio y
@@ -137,11 +149,12 @@ catalogo allowlistado de modulos y sus guardas. La explotacion directa desde el 
 queda separada, registrada, exige confirmacion explicita y ademas requiere
 `SCOPESCAN_ENABLE_EXPLOIT=1`.
 
-El panel sigue limitado a loopback por defecto. Si necesitas servirlo a otro
-equipo de un laboratorio, configura `SCOPESCAN_PANEL_USER` y
-`SCOPESCAN_PANEL_PASSWORD`; los clientes no locales deberan autenticarse con Basic
-Auth. Sin esas variables, las conexiones remotas se rechazan aunque el servidor
-escuche en `0.0.0.0`.
+`scopescan serve` sigue limitado a loopback aunque configures autenticación.
+Para un despliegue remoto con un comando ASGI propio, configura Basic Auth,
+Host y orígenes admitidos, y un proxy TLS siguiendo
+[Seguridad del panel](docs/panel-security.md). Sin credenciales configuradas,
+el middleware rechaza conexiones no locales. Basic Auth no sustituye CSRF en
+las escrituras de navegador.
 
 El bundle ZIP incluye informe, JSON, CSV y artefactos MSF generados por ScopeScan.
 Para evitar entregables enormes por logs de consola, cada artefacto MSF se
@@ -356,6 +369,18 @@ realista (`tests/conftest.py`) y aíslan la base de datos en un directorio
 temporal vía `SCOPESCAN_DATA`. `pytest` usa `src` como `pythonpath` y escribe sus
 temporales en `.pytest_tmp/`, que esta ignorado por git para evitar problemas con
 el directorio temporal del usuario en Windows.
+
+La [verificación de la fase A](docs/phase-a-verification.md) registra la suite,
+la instalación de rueda y el sdist comprobados localmente. El
+[plan de implementación](docs/implementation-plan.md) conserva las fases pendientes.
+La [consolidación](docs/consolidation.md) documenta la preservación del historial.
+
+## Licencia, seguridad y datos
+
+El código propio se distribuye bajo [MIT](LICENSE). Para comunicar una
+vulnerabilidad, consulta [SECURITY.md](SECURITY.md). El
+[contrato de datos y exportaciones](docs/data-and-exports.md) explica la evidencia
+incluida, los hashes y el tratamiento de los archivos entregados.
 
 ## Estructura
 

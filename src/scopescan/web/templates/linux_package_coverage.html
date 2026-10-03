@@ -1,0 +1,9 @@
+<p class="small"><strong>Cobertura de paquetes:</strong>
+{{ inv.package_count if inv.package_count is defined else inv.packages|length }} obtenidos;
+total declarado {{ inv.get('package_total') if inv.get('package_total') is not none else 'sin dato' }}.
+Lectura {{ 'comprobada' if inv.get('packages_checked') is sameas true else 'fallida' if inv.get('packages_checked') is sameas false else 'sin dato' }};
+recorte {{ 'si' if inv.get('packages_truncated') is sameas true else 'no' if inv.get('packages_truncated') is sameas false else 'sin dato' }};
+registros sin interpretar {{ inv.get('packages_unparsed') if inv.get('packages_unparsed') is not none else 'sin dato' }};
+cobertura {{ 'completa' if inv.get('packages_complete') is sameas true else 'incompleta' if inv.get('packages_complete') is sameas false else 'sin dato (inventario antiguo o sin metadatos)' }}.
+{% if inv.get('packages_complete') is not sameas true %}<strong>El inventario no acredita cobertura completa; puede faltar software.</strong>{% endif %}
+Reinicio pendiente {{ 'si' if inv.get('reboot_required') is sameas true else 'no' if inv.get('reboot_required') is sameas false else 'sin dato' }}.</p>

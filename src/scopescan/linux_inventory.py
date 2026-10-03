@@ -32,21 +32,32 @@ emit() {
 }
 emit HOSTNAME "$(hostname 2>/dev/null || true)"
 emit KERNEL "$(uname -r 2>/dev/null || true)"
-emit OS_RELEASE "$(cat /etc/os-release 2>/dev/null || true)"
+os_release="$(cat /etc/os-release 2>/dev/null || true)"
+emit OS_RELEASE "$os_release"
 
 manager=''
 packages=''
+packages_checked='no'
 if command -v dpkg-query >/dev/null 2>&1; then
     manager='dpkg'
-    packages="$(dpkg-query -W -f='${binary:Package}\t${Version}\n' 2>/dev/null | sed -n '1,5000p')"
+    packages="$(dpkg-query -W -f='${binary:Package}\t${Version}\n' 2>/dev/null)" && packages_checked='yes'
 elif command -v rpm >/dev/null 2>&1; then
     manager='rpm'
-    packages="$(rpm -qa --qf '%{NAME}\t%{VERSION}-%{RELEASE}\n' 2>/dev/null | sed -n '1,5000p')"
+    packages="$(rpm -qa --qf '%{NAME}\t%{VERSION}-%{RELEASE}\n' 2>/dev/null)" && packages_checked='yes'
 elif command -v apk >/dev/null 2>&1; then
     manager='apk'
-    packages="$(apk info -v 2>/dev/null | sed -n '1,5000p')"
+    # Installed APK metadata keeps the full version (including -rN) separate.
+    if [ -r /lib/apk/db/installed ]; then
+        packages="$(awk 'BEGIN { RS=""; FS="\n" } { n=""; v=""; for (i=1;i<=NF;i++) { if ($i ~ /^P:/) n=substr($i,3); if ($i ~ /^V:/) v=substr($i,3) } if(n!="" && v!="") printf "%s\t%s\n",n,v }' /lib/apk/db/installed)" && packages_checked='yes'
+    else
+        packages="$(apk info -v 2>/dev/null)" && packages_checked='yes'
+    fi
 fi
+package_total="$(printf '%s\n' "$packages" | awk 'NF { n++ } END { print n+0 }')"
+packages="$(printf '%s\n' "$packages" | sed -n '1,5000p')"
 emit PACKAGE_MANAGER "$manager"
+emit PACKAGES_CHECKED "$packages_checked"
+emit PACKAGE_TOTAL "$package_total"
 emit PACKAGES "$packages"
 
 security_updates=''
@@ -110,8 +121,34 @@ if [ -r /sys/module/apparmor/parameters/enabled ]; then
 else
     emit APPARMOR ''
 fi
-if [ -e /var/run/reboot-required ]; then emit REBOOT_REQUIRED yes; else emit REBOOT_REQUIRED no; fi
 """
+
+# A missing Debian-family marker is meaningful only when its notifier exists.
+# RPM/Alpine need their own vendor checks; absence of this path proves nothing.
+REBOOT_CHECK = r"""
+os_id=''
+while IFS= read -r os_line; do
+    case "$os_line" in ID=*) os_id="${os_line#ID=}" ;; esac
+done <<OS_RELEASE_DATA
+$os_release
+OS_RELEASE_DATA
+os_id="${os_id#\"}"
+os_id="${os_id%\"}"
+os_id="${os_id#\'}"
+os_id="${os_id%\'}"
+reboot_required=''
+case "$os_id" in
+    ubuntu|debian)
+        if [ -e /var/run/reboot-required ]; then
+            reboot_required='yes'
+        elif [ -x /usr/share/update-notifier/notify-reboot-required ]; then
+            reboot_required='no'
+        fi
+        ;;
+esac
+emit REBOOT_REQUIRED "$reboot_required"
+"""
+SCRIPT += REBOOT_CHECK
 
 
 class InventoryError(RuntimeError):
@@ -152,10 +189,15 @@ def _os_release(raw: str) -> dict[str, str]:
 def _packages(raw: str, manager: str) -> list[dict[str, str]]:
     rows: list[dict[str, str]] = []
     for line in raw.splitlines()[:5000]:
-        if manager in {"dpkg", "rpm"} and "\t" in line:
+        if manager in {"dpkg", "rpm", "apk"} and "\t" in line:
             name, version = line.split("\t", 1)
         elif manager == "apk" and "-" in line:
-            name, version = line.rsplit("-", 1)
+            # APK versions start with a number and may include suffixes and
+            # revision; a package name itself may contain hyphens/digits.
+            match = re.fullmatch(r"(.+)-([0-9][A-Za-z0-9._+~]*-r[0-9]+)", line)
+            if not match:
+                continue
+            name, version = match.groups()
         else:
             continue
         if name and version:
@@ -200,6 +242,15 @@ def parse_inventory(output: str, *, ssh_port: int = 22) -> dict:
     manager = records.get("PACKAGE_MANAGER", "").strip()
     sshd = records.get("SSHD_EFFECTIVE", "")
     observed = records.get("FIREWALL_OBSERVED") == "yes"
+    packages = _packages(records.get("PACKAGES", ""), manager)
+    raw_count = len(records.get("PACKAGES", "").splitlines())
+    total_raw = records.get("PACKAGE_TOTAL", "")
+    package_total = int(total_raw) if total_raw.isdigit() else None
+    package_checked = records.get("PACKAGES_CHECKED")
+    packages_unparsed = max(min(raw_count, 5000) - len(packages), 0)
+    packages_truncated = (package_total is not None and package_total > min(raw_count, 5000)) or (
+        raw_count > 5000
+    )
     return {
         "platform": "linux",
         "computer": records.get("HOSTNAME", "").strip(),
@@ -208,7 +259,15 @@ def parse_inventory(output: str, *, ssh_port: int = 22) -> dict:
         "os_version": os_data.get("version_id", ""),
         "kernel": kernel,
         "package_manager": manager,
-        "packages": _packages(records.get("PACKAGES", ""), manager),
+        "packages": packages,
+        "package_total": package_total,
+        "packages_checked": package_checked == "yes" if package_checked else None,
+        "packages_truncated": packages_truncated,
+        "packages_unparsed": packages_unparsed,
+        "packages_complete": (
+            package_checked == "yes" and not packages_truncated and not packages_unparsed
+            if package_checked and package_total is not None else None
+        ),
         "security_updates_checked": records.get("SECURITY_UPDATES_CHECKED") == "yes",
         "security_updates": _security_updates(records.get("SECURITY_UPDATES", ""), manager),
         "ssh_port": ssh_port,
@@ -226,7 +285,10 @@ def parse_inventory(output: str, *, ssh_port: int = 22) -> dict:
         "aslr": int(records["ASLR"]) if records.get("ASLR") in {"0", "1", "2"} else None,
         "selinux": records.get("SELINUX", "").strip().lower() or None,
         "apparmor": records.get("APPARMOR", "").strip().lower() or None,
-        "reboot_required": records.get("REBOOT_REQUIRED") == "yes",
+        "reboot_required": (
+            records["REBOOT_REQUIRED"] == "yes"
+            if records.get("REBOOT_REQUIRED") in {"yes", "no"} else None
+        ),
     }
 
 
@@ -255,15 +317,19 @@ def collect(
     kwargs = {"creationflags": subprocess.CREATE_NO_WINDOW} if sys.platform == "win32" else {}
     try:
         result = subprocess.run(
-            argv, input=SCRIPT, capture_output=True, text=True, encoding="utf-8",
-            errors="replace", timeout=180, check=False, **kwargs,
+            argv, input=SCRIPT.encode("utf-8"), capture_output=True,
+            timeout=180, check=False, **kwargs,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise InventoryError(f"No se pudo ejecutar el inventario Linux: {exc}") from exc
     if result.returncode:
-        detail = (result.stderr or "fallo de autenticacion SSH").splitlines()[0][:300]
+        stderr = result.stderr.decode("utf-8", "replace") if isinstance(result.stderr, bytes) \
+            else result.stderr
+        detail = (stderr or "fallo de autenticacion SSH").splitlines()[0][:300]
         raise InventoryError(f"Fallo el inventario de {host}: {detail}")
-    return parse_inventory(result.stdout, ssh_port=port)
+    stdout = result.stdout.decode("utf-8", "replace") if isinstance(result.stdout, bytes) \
+        else result.stdout
+    return parse_inventory(stdout, ssh_port=port)
 
 
 def inventory_scan(

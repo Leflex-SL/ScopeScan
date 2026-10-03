@@ -31,6 +31,15 @@ class ColaFalsa:
     def active_ids(self) -> list[int]:
         return list(self.enviados)
 
+    def request_delete(self, scan_id: int) -> bool:
+        self.cancel(scan_id)
+        db.delete_scan(scan_id)
+        return False
+
+    def submit_enrichment(self, scan_id: int, kind: str, func, *args, **kwargs) -> bool:
+        func(*args, **kwargs)
+        return True
+
     def shutdown(self, wait: bool = False) -> None:
         pass
 
@@ -42,9 +51,17 @@ def cola(monkeypatch):
     return doble
 
 
+class BrowserClient(TestClient):
+    def request(self, method, url, **kwargs):
+        token = self.cookies.get("scopescan_csrf")
+        if token and method.upper() in {"POST", "PUT", "PATCH", "DELETE"}:
+            kwargs["headers"] = {**(kwargs.get("headers") or {}), "X-CSRF-Token": token}
+        return super().request(method, url, **kwargs)
+
+
 @pytest.fixture
 def client(cola):
-    with TestClient(web_app.app, client=("127.0.0.1", 50000)) as test_client:
+    with BrowserClient(web_app.app, base_url="http://localhost", client=("127.0.0.1", 50000)) as test_client:
         yield test_client
 
 
@@ -58,7 +75,7 @@ def test_panel_vacio(client):
 
 
 def test_panel_rechaza_cliente_remoto():
-    remote = TestClient(web_app.app, client=("203.0.113.10", 50000))
+    remote = TestClient(web_app.app, base_url="http://localhost", client=("203.0.113.10", 50000))
     assert remote.get("/").status_code == 403
 
 
@@ -66,10 +83,10 @@ def test_panel_remoto_permite_basic_auth_configurado(monkeypatch):
     monkeypatch.setenv("SCOPESCAN_PANEL_USER", "audit")
     monkeypatch.setenv("SCOPESCAN_PANEL_PASSWORD", "secret")
     token = base64.b64encode(b"audit:secret").decode()
-    remote = TestClient(web_app.app, client=("203.0.113.10", 50000))
+    remote = TestClient(web_app.app, base_url="http://localhost", client=("203.0.113.10", 50000))
 
     denied = remote.get("/")
-    assert denied.status_code == 403
+    assert denied.status_code == 401
     assert denied.headers["www-authenticate"] == 'Basic realm="ScopeScan"'
 
     allowed = remote.get("/", headers={"Authorization": f"Basic {token}"})
@@ -269,7 +286,8 @@ def test_enriquecimiento_y_inventario_visibles(client, monkeypatch, nmap_xml):
     assert firmware_choices == [False, True]
     assert "CVE-2024-12345" in detail
     assert "Posible afectacion" in detail
-    assert "KB123" in detail
+    assert "1 KB" in detail
+    assert "KB123" in client.get(f"/scans/{scan_id}/inventory/192.168.1.10/updates").text
     assert "BIOS 1.2" in detail
 
     def fake_exploitdb(_scan_id):

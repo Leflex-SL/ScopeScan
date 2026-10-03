@@ -1,0 +1,14 @@
+{% extends "base.html" %}
+{% block title %}Inventario {{ host }} - ScopeScan{% endblock %}
+{% block content %}
+<h1>{{ collection }} · {{ host }}</h1>
+<a href="/scans/{{ scan_id }}">Volver al escaneo</a>
+{% if inv.platform == 'linux' and collection == 'packages' %}{% include 'linux_package_coverage.html' %}{% endif %}
+<form method="get" class="actions"><input name="q" value="{{ q }}" placeholder="Buscar"><button>Buscar</button></form>
+<p>{{ total }} resultados · pagina {{ page }} · hasta 100 registros por pagina</p>
+<table><thead><tr><th>Nombre / KB</th><th>Version</th><th>Fabricante</th></tr></thead><tbody>
+{% for item in items %}<tr><td>{{ item.name or item.kb or 'sin dato' }}</td><td>{{ item.version or 'sin dato' }}</td><td>{{ item.publisher or 'sin dato' }}</td></tr>{% endfor %}
+</tbody></table>
+<div class="actions">{% if page > 1 %}<a href="?{{ page_query }}&page={{ page - 1 }}">Anterior</a>{% endif %}
+{% if has_next %}<a href="?{{ page_query }}&page={{ page + 1 }}">Siguiente</a>{% endif %}</div>
+{% endblock %}

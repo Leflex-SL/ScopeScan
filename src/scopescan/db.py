@@ -13,6 +13,7 @@ import json
 import sqlite3
 from collections.abc import Iterator
 from contextlib import contextmanager
+from contextvars import ContextVar
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -41,7 +42,8 @@ CREATE TABLE IF NOT EXISTS scans (
     progress_task   TEXT DEFAULT '',
     target_private  INTEGER DEFAULT 1,
     authorized_by   TEXT DEFAULT '',
-    notes           TEXT DEFAULT ''
+    notes           TEXT DEFAULT '',
+    deletion_pending INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS hosts (
@@ -251,8 +253,33 @@ def now() -> str:
     return datetime.now(UTC).isoformat(timespec="seconds")
 
 
+_snapshot_connection: ContextVar[sqlite3.Connection | None] = ContextVar(
+    "scopescan_snapshot", default=None
+)
+
+
+@contextmanager
+def read_snapshot() -> Iterator[None]:
+    """Reuse one read transaction for all getters during an export."""
+    if _snapshot_connection.get() is not None:
+        yield
+        return
+    with connect() as conn:
+        conn.execute("PRAGMA query_only=ON")
+        conn.execute("BEGIN")
+        token = _snapshot_connection.set(conn)
+        try:
+            yield
+        finally:
+            _snapshot_connection.reset(token)
+
+
 @contextmanager
 def connect(path: Path | None = None) -> Iterator[sqlite3.Connection]:
+    snapshot = _snapshot_connection.get()
+    if path is None and snapshot is not None:
+        yield snapshot
+        return
     conn = sqlite3.connect(path or db_path(), timeout=30)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
@@ -270,6 +297,9 @@ def connect(path: Path | None = None) -> Iterator[sqlite3.Connection]:
 def init_db(path: Path | None = None) -> None:
     with connect(path) as conn:
         conn.executescript(SCHEMA)
+        scan_columns = {row["name"] for row in conn.execute("PRAGMA table_info(scans)")}
+        if "deletion_pending" not in scan_columns:
+            conn.execute("ALTER TABLE scans ADD COLUMN deletion_pending INTEGER NOT NULL DEFAULT 0")
         columns = {row["name"] for row in conn.execute("PRAGMA table_info(findings)")}
         if "assessment" not in columns:
             conn.execute("ALTER TABLE findings ADD COLUMN assessment TEXT NOT NULL DEFAULT 'exposure'")
@@ -467,7 +497,7 @@ def save_results(scan_id: int, run: NmapRun, findings: list[Finding], risk: int)
         )
 
 
-def list_scans(limit: int = 50) -> list[sqlite3.Row]:
+def list_scans(limit: int = 50, *, offset: int = 0, search: str = "") -> list[sqlite3.Row]:
     with connect() as conn:
         return list(
             conn.execute(
@@ -476,8 +506,10 @@ def list_scans(limit: int = 50) -> list[sqlite3.Row]:
                             WHERE f.scan_id = s.id AND f.severity >= ?) AS findings_relevantes,
                           (SELECT COUNT(*) FROM findings f
                             WHERE f.scan_id = s.id AND f.severity = ?) AS criticas
-                     FROM scans s ORDER BY s.id DESC LIMIT ?""",
-                (int(Severity.LOW), int(Severity.CRITICAL), limit),
+                     FROM scans s WHERE s.name LIKE ? OR s.targets LIKE ?
+                     ORDER BY s.id DESC LIMIT ? OFFSET ?""",
+                (int(Severity.LOW), int(Severity.CRITICAL),
+                 "%" + search + "%", "%" + search + "%", limit, offset),
             )
         )
 
@@ -558,15 +590,16 @@ def global_stats() -> dict[str, Any]:
     }
 
 
-def recent_findings(limit: int = 100, min_severity: int = int(Severity.LOW)) -> list[sqlite3.Row]:
+def recent_findings(limit: int = 100, min_severity: int = int(Severity.LOW),
+                    *, offset: int = 0, search: str = "") -> list[sqlite3.Row]:
     with connect() as conn:
         return list(
             conn.execute(
                 """SELECT f.*, s.name AS scan_name, s.created_at AS scan_date
                      FROM findings f JOIN scans s ON s.id = f.scan_id
-                    WHERE f.severity >= ?
-                    ORDER BY f.severity DESC, f.scan_id DESC LIMIT ?""",
-                (min_severity, limit),
+                    WHERE f.severity >= ? AND (f.title LIKE ? OR f.host LIKE ? OR s.name LIKE ?)
+                    ORDER BY f.severity DESC, f.scan_id DESC, f.id DESC LIMIT ? OFFSET ?""",
+                (min_severity, *["%" + search + "%"] * 3, limit, offset),
             )
         )
 
@@ -697,18 +730,50 @@ def get_exploit_runs(scan_id: int) -> list[sqlite3.Row]:
         )
 
 
-def delete_scan(scan_id: int) -> None:
+class ScanUnavailable(ValueError):
+    """An atomic lifecycle transition refused a missing, busy or deleting scan."""
+
+
+def _delete_scan_rows(conn: sqlite3.Connection, scan_id: int) -> None:
+    for table in ("exploit_runs", "msf_results", "exploitdb_results", "enrichment_jobs",
+                  "cve_candidates", "host_inventory", "findings", "ports", "hosts"):
+        conn.execute(f"DELETE FROM {table} WHERE scan_id = ?", (scan_id,))
+    conn.execute("DELETE FROM scans WHERE id = ?", (scan_id,))
+
+
+def request_scan_deletion(scan_id: int, *, defer: bool = False) -> bool:
+    """Serialize deletion with claims, including the HTTP-to-background-task gap."""
     with connect() as conn:
-        conn.execute("DELETE FROM exploit_runs WHERE scan_id = ?", (scan_id,))
-        conn.execute("DELETE FROM msf_results WHERE scan_id = ?", (scan_id,))
-        conn.execute("DELETE FROM exploitdb_results WHERE scan_id = ?", (scan_id,))
-        conn.execute("DELETE FROM enrichment_jobs WHERE scan_id = ?", (scan_id,))
-        conn.execute("DELETE FROM cve_candidates WHERE scan_id = ?", (scan_id,))
-        conn.execute("DELETE FROM host_inventory WHERE scan_id = ?", (scan_id,))
-        conn.execute("DELETE FROM findings WHERE scan_id = ?", (scan_id,))
-        conn.execute("DELETE FROM ports WHERE scan_id = ?", (scan_id,))
-        conn.execute("DELETE FROM hosts WHERE scan_id = ?", (scan_id,))
-        conn.execute("DELETE FROM scans WHERE id = ?", (scan_id,))
+        conn.execute("BEGIN IMMEDIATE")
+        scan = conn.execute("SELECT status FROM scans WHERE id=?", (scan_id,)).fetchone()
+        if scan is None:
+            return False
+        active = conn.execute(
+            "SELECT 1 FROM enrichment_jobs WHERE scan_id=? AND status IN ('running', 'queued')",
+            (scan_id,),
+        ).fetchone()
+        if active is not None:
+            raise ScanUnavailable("Espera a que termine el enriquecimiento")
+        if scan["status"] == "running" and not defer:
+            raise ScanUnavailable("Escaneo activo sin worker local; espera a que termine")
+        if defer:
+            conn.execute("UPDATE scans SET deletion_pending=1 WHERE id=?", (scan_id,))
+            return True
+        _delete_scan_rows(conn, scan_id)
+        return False
+
+
+def delete_scan(scan_id: int) -> None:
+    request_scan_deletion(scan_id)
+
+
+def claim_scan_execution(scan_id: int) -> bool:
+    with connect() as conn:
+        cursor = conn.execute(
+            """UPDATE scans SET status='running', started_at=?
+               WHERE id=? AND status='queued' AND deletion_pending=0""", (now(), scan_id)
+        )
+        return cursor.rowcount == 1
 
 
 def hosts_with_ports(scan_id: int) -> list[tuple[sqlite3.Row, list[sqlite3.Row]]]:
@@ -881,6 +946,46 @@ def get_host_inventories(scan_id: int) -> dict[str, dict[str, Any]]:
         }
 
 
+def inventory_exists(scan_id: int, host: str) -> bool:
+    with connect() as conn:
+        return conn.execute("SELECT 1 FROM host_inventory WHERE scan_id=? AND host=?",
+                            (scan_id, host)).fetchone() is not None
+
+
+def get_host_inventory_summaries(scan_id: int) -> dict[str, dict[str, Any]]:
+    """Keep bulk package/software arrays in SQLite until explicitly requested."""
+    with connect() as conn:
+        rows = conn.execute(
+            """SELECT host, json_remove(data, '$.packages', '$.software', '$.updates') AS summary,
+                   json_array_length(data, '$.packages') AS package_count,
+                   json_array_length(data, '$.software') AS software_count,
+                   json_array_length(data, '$.updates') AS update_count
+                 FROM host_inventory WHERE scan_id=?""", (scan_id,)
+        )
+        return {row["host"]: dict(json.loads(row["summary"]),
+                                  package_count=row["package_count"] or 0,
+                                  software_count=row["software_count"] or 0,
+                                  update_count=row["update_count"] or 0) for row in rows}
+
+
+def inventory_page(scan_id: int, host: str, collection: str, *, offset: int = 0,
+                   limit: int = 100, search: str = "") -> tuple[list[dict], int]:
+    if collection not in {"packages", "software", "updates"}:
+        raise ValueError("Unsupported inventory collection")
+    with connect() as conn:
+        query = """FROM host_inventory h, json_each(h.data, ?) j
+                   WHERE h.scan_id=? AND h.host=? AND
+                   (json_extract(j.value, '$.name') LIKE ? OR
+                    json_extract(j.value, '$.kb') LIKE ? OR
+                    json_extract(j.value, '$.version') LIKE ?)"""
+        params = ("$." + collection, scan_id, host, *["%" + search + "%"] * 3)
+        total = conn.execute("SELECT COUNT(*) " + query, params).fetchone()[0]
+        items = [json.loads(row[0]) for row in conn.execute(
+            "SELECT j.value " + query + " ORDER BY CAST(j.key AS INTEGER) LIMIT ? OFFSET ?",
+            (*params, limit, offset))]
+        return items, total
+
+
 def get_control_results(scan_id: int) -> list[sqlite3.Row]:
     with connect() as conn:
         return list(conn.execute(
@@ -997,8 +1102,42 @@ def get_windows_patch_candidates(scan_id: int) -> list[sqlite3.Row]:
         ))
 
 
+def claim_enrichment_job(scan_id: int, kind: str) -> bool:
+    """Acquire one running enrichment per scan/kind atomically."""
+    with connect() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        available = conn.execute(
+            "SELECT 1 FROM scans WHERE id=? AND deletion_pending=0", (scan_id,)
+        ).fetchone()
+        if available is None:
+            raise ScanUnavailable("Escaneo inexistente o pendiente de borrado")
+        cursor = conn.execute(
+            """INSERT INTO enrichment_jobs (scan_id, kind, status, error, updated_at)
+               VALUES (?, ?, 'running', '', ?)
+               ON CONFLICT(scan_id, kind) DO UPDATE SET status='running', error='',
+                 updated_at=excluded.updated_at WHERE enrichment_jobs.status != 'running'""",
+            (scan_id, kind, now()),
+        )
+        return cursor.rowcount == 1
+
+
+def enrichment_claim_active(scan_id: int, kind: str) -> bool:
+    with connect() as conn:
+        return conn.execute(
+            """SELECT 1 FROM enrichment_jobs j JOIN scans s ON s.id=j.scan_id
+               WHERE s.id=? AND s.deletion_pending=0 AND j.kind=? AND j.status='running'""",
+            (scan_id, kind),
+        ).fetchone() is not None
+
+
 def set_enrichment_status(scan_id: int, kind: str, status: str, error: str = "") -> None:
     with connect() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        scan = conn.execute("SELECT deletion_pending FROM scans WHERE id=?", (scan_id,)).fetchone()
+        if scan is None:
+            return  # A late callback must not recreate work or violate a deleted scan's FK.
+        if status in {"running", "queued"} and scan["deletion_pending"]:
+            raise ScanUnavailable("Escaneo pendiente de borrado")
         conn.execute(
             """INSERT INTO enrichment_jobs (scan_id, kind, status, error, updated_at)
                VALUES (?, ?, ?, ?, ?)

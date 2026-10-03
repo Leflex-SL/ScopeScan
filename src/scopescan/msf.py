@@ -253,7 +253,7 @@ def prepare_exploit_resource(
 ) -> tuple[str, str]:
     """Genera un resource script de Metasploit y lo registra sin ejecutarlo.
 
-    Devuelve ``(rc_path, rc_text)``. Este flujo sirve para handoff: medscan deja
+    Devuelve ``(rc_path, rc_text)``. Este flujo sirve para handoff: scopescan deja
     el artefacto listo y auditable, y el operador lo lanza manualmente en su
     msfconsole cuando proceda.
     """

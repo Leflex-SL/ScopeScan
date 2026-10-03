@@ -147,7 +147,7 @@ def explain_failure(execution: MsfExecution) -> str:
     err = (execution.stderr + execution.stdout).lower()
     if "could not connect to the database" in err or "postgresql" in err:
         return (
-            "msfconsole no pudo conectar con PostgreSQL. medscan lanza con -n (sin BD), "
+            "msfconsole no pudo conectar con PostgreSQL. scopescan lanza con -n (sin BD), "
             "asi que esto no deberia bloquear un check; revisa la version de Metasploit."
         )
     if "bundler" in err or "gem" in err and "not" in err:

@@ -1,4 +1,4 @@
-from medscan.cli import main
+from scopescan.cli import main
 
 if __name__ == "__main__":
     raise SystemExit(main())

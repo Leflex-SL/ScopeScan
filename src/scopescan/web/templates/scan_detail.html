@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}Escaneo #{{ scan.id }} - Medscan{% endblock %}
+{% block title %}Escaneo #{{ scan.id }} - ScopeScan{% endblock %}
 
 {% block content %}
 <h1>{{ scan.name }}</h1>
@@ -265,7 +265,7 @@
         <button class="danger" type="submit" {{ 'disabled' if not msf_available or (enrichment.get('metasploit-exploit') and enrichment.get('metasploit-exploit').status == 'running') }}>Explotar</button>
       </form>
       {% else %}
-      <span class="muted small">Explotacion directa deshabilitada. Define <code>MEDSCAN_ENABLE_EXPLOIT=1</code> si necesitas habilitarla en laboratorio.</span>
+      <span class="muted small">Explotacion directa deshabilitada. Define <code>SCOPESCAN_ENABLE_EXPLOIT=1</code> si necesitas habilitarla en laboratorio.</span>
       {% endif %}
       {% else %}
       <span class="muted small">No explotable desde el panel</span>

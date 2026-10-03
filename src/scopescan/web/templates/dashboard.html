@@ -1,6 +1,6 @@
 {% extends "base.html" %}
 {% set active_nav = "dashboard" %}
-{% block title %}Escaneos - Medscan{% endblock %}
+{% block title %}Escaneos - ScopeScan{% endblock %}
 
 {% block content %}
 <h1>Escaneos</h1>
@@ -44,7 +44,7 @@
   <div class="stat">
     <div class="value"><span class="badge {{ 'critical' if env.msf_exploit_enabled else 'info' }}">{{ 'ON' if env.msf_exploit_enabled else 'OFF' }}</span></div>
     <div class="label">Explotacion directa</div>
-    <div class="small muted">{{ 'MEDSCAN_ENABLE_EXPLOIT=1' if env.msf_exploit_enabled else 'Solo handoff .rc por defecto' }}</div>
+    <div class="small muted">{{ 'SCOPESCAN_ENABLE_EXPLOIT=1' if env.msf_exploit_enabled else 'Solo handoff .rc por defecto' }}</div>
   </div>
   <div class="stat">
     <div class="value"><span class="badge {{ 'low' if env.panel_auth_enabled else 'info' }}">{{ 'ON' if env.panel_auth_enabled else 'LOCAL' }}</span></div>

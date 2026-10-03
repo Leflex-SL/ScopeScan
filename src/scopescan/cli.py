@@ -59,7 +59,7 @@ def _color(text: str, slug: str) -> str:
 
 def cmd_doctor(_args: argparse.Namespace) -> int:
     env = probe_environment()
-    print("Entorno de Medscan")
+    print("Entorno de ScopeScan")
     print(f"  nmap:        {env.nmap_path or 'NO ENCONTRADO'}")
     if env.nmap_version:
         print(f"  version:     {env.nmap_version}")
@@ -67,7 +67,7 @@ def cmd_doctor(_args: argparse.Namespace) -> int:
     print(f"  metasploit:  {env.msf_path or 'no instalado (verificacion MSF deshabilitada)'}")
     print(
         "  explotacion: "
-        f"{'habilitada' if msf_exploit_enabled() else 'deshabilitada (MEDSCAN_ENABLE_EXPLOIT=1)'}"
+        f"{'habilitada' if msf_exploit_enabled() else 'deshabilitada (SCOPESCAN_ENABLE_EXPLOIT=1)'}"
     )
     print(f"  exploit-db:  {env.searchsploit_path or 'no instalado (correlacion Exploit-DB deshabilitada)'}")
     print(f"  datos:       {env.data_dir}")
@@ -91,11 +91,11 @@ def cmd_self_test(_args: argparse.Namespace) -> int:
     checks: list[tuple[str, bool, str]] = []
     package_dir = Path(__file__).resolve().parent
 
-    checks.append(("codigo", compileall.compile_dir(package_dir, quiet=1), "compileall src/medscan"))
+    checks.append(("codigo", compileall.compile_dir(package_dir, quiet=1), "compileall src/scopescan"))
     checks.append(("plantillas", (package_dir / "web" / "templates").is_dir(), "web/templates existe"))
     checks.append(("estaticos", (package_dir / "web" / "static").is_dir(), "web/static existe"))
     try:
-        with tempfile.TemporaryDirectory(prefix="medscan-selftest-") as tmp:
+        with tempfile.TemporaryDirectory(prefix="scopescan-selftest-") as tmp:
             test_db = Path(tmp) / "selftest.sqlite3"
             db.init_db(test_db)
             checks.append(("sqlite", test_db.exists(), "schema inicializable"))
@@ -107,7 +107,7 @@ def cmd_self_test(_args: argparse.Namespace) -> int:
     checks.append(("entorno", True, f"nmap={'ok' if env.ready else 'no instalado'}; datos={env.data_dir}"))
 
     failed = False
-    print("Self-test de Medscan")
+    print("Self-test de ScopeScan")
     for name, ok, detail in checks:
         failed = failed or not ok
         print(f"  {'OK ' if ok else 'ERR'} {name}: {detail}")
@@ -306,7 +306,7 @@ def cmd_exploitdb(args: argparse.Namespace) -> int:
         print(f"Error Exploit-DB: {exc}", file=sys.stderr)
         return 1
     print(f"{count} referencia(s) Exploit-DB guardadas para el escaneo #{args.scan_id}.")
-    print("Son PoC publicas por CVE; medscan no las descarga ni ejecuta.")
+    print("Son PoC publicas por CVE; scopescan no las descarga ni ejecuta.")
     return 0
 
 
@@ -375,7 +375,7 @@ def cmd_msf(args: argparse.Namespace) -> int:
     for address, portid, service_name, mod in plan:
         print(f"  {address}:{portid:<6} {mod.action:<6} {mod.path}  ({service_name or '?'})")
     print(
-        f"\n{len(plan)} comprobacion(es). Solo scanner/`check`: medscan NO lanza exploits "
+        f"\n{len(plan)} comprobacion(es). Solo scanner/`check`: scopescan NO lanza exploits "
         "ni payloads."
     )
 
@@ -422,7 +422,7 @@ def cmd_msf_catalog(_args: argparse.Namespace) -> int:
     """Lista el catalogo allowlistado de Metasploit sin tocar objetivos."""
     print("Catalogo Metasploit allowlistado")
     print("  scanner/check: se usan para verificacion")
-    print("  exploit: solo se prepara .rc o se ejecuta si MEDSCAN_ENABLE_EXPLOIT=1")
+    print("  exploit: solo se prepara .rc o se ejecuta si SCOPESCAN_ENABLE_EXPLOIT=1")
     for mod in msf_modules.catalog():
         cves = ", ".join(mod.cves) if mod.cves else "-"
         exploitable = "si" if mod.exploitable else "no"
@@ -492,7 +492,7 @@ def cmd_serve(args: argparse.Namespace) -> int:
         print("Aviso: nmap no esta instalado; el panel arranca pero no podra escanear.\n")
     print(f"Panel en http://{args.host}:{args.port}")
     uvicorn.run(
-        "medscan.web.app:app",
+        "scopescan.web.app:app",
         host=args.host,
         port=args.port,
         reload=args.reload,
@@ -503,7 +503,7 @@ def cmd_serve(args: argparse.Namespace) -> int:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="medscan",
+        prog="scopescan",
         description="Escaner de puertos y vulnerabilidades sobre nmap, con panel web.",
     )
     sub = parser.add_subparsers(dest="command", required=True)

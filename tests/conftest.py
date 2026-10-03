@@ -1,6 +1,6 @@
 """Fixtures comunes.
 
-Lo importante aqui es MEDSCAN_DATA: sin el, las pruebas escribirian en la base
+Lo importante aqui es SCOPESCAN_DATA: sin el, las pruebas escribirian en la base
 de datos real del usuario. config.data_dir() lee la variable en cada llamada,
 asi que basta con apuntarla a un directorio temporal antes de tocar nada.
 """
@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import pytest
 
-from medscan import db
+from scopescan import db
 
 # Salida realista de nmap: dos hosts, servicios con version, un script NSE que
 # confirma MS17-010 y otro que declara NOT VULNERABLE.
@@ -58,7 +58,7 @@ NMAP_XML = """<?xml version="1.0" encoding="UTF-8"?>
 @pytest.fixture(autouse=True)
 def datos_temporales(tmp_path, monkeypatch):
     """Aisla cada prueba en su propio directorio de datos."""
-    monkeypatch.setenv("MEDSCAN_DATA", str(tmp_path / "datos"))
+    monkeypatch.setenv("SCOPESCAN_DATA", str(tmp_path / "datos"))
     db.init_db()
     return tmp_path
 

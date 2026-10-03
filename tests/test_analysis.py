@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from medscan.analysis import analyze, finding_from_script, risk_score, summarize
-from medscan.models import Assessment, ScriptResult, Severity
-from medscan.nmap_parser import parse_string
+from scopescan.analysis import analyze, finding_from_script, risk_score, summarize
+from scopescan.models import Assessment, ScriptResult, Severity
+from scopescan.nmap_parser import parse_string
 
 
 def script(id_: str, output: str) -> ScriptResult:
@@ -140,7 +140,7 @@ def test_resumen_y_puntuacion(nmap_xml):
 
 def test_la_puntuacion_satura():
     """Muchos hallazgos medios no deben empatar con varias criticas ni pasarse de 100."""
-    from medscan.models import Finding
+    from scopescan.models import Finding
 
     criticos = [
         Finding(title=f"c{i}", severity=Severity.CRITICAL, source="t", host="h")

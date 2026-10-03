@@ -40,7 +40,7 @@ class MsfModule:
     # CVEs que justifican lanzar este modulo. Vacio = aplica por servicio/puerto.
     cves: tuple[str, ...] = field(default=())
     # Payload por defecto al EXPLOTAR (solo modulos exploit). Se elige uno
-    # multiplataforma/estable; el usuario puede cambiarlo via MEDSCAN_MSF_PAYLOAD.
+    # multiplataforma/estable; el usuario puede cambiarlo via SCOPESCAN_MSF_PAYLOAD.
     payload: str = ""
     prerequisites: str = ""
     safety_note: str = ""

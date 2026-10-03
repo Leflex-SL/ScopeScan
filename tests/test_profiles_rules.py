@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import pytest
 
-from medscan.models import Port, Service, Severity
-from medscan.profiles import DEFAULT_PROFILE, PROFILES, get_profile
-from medscan.rules import evaluate_port
+from scopescan.models import Port, Service, Severity
+from scopescan.profiles import DEFAULT_PROFILE, PROFILES, get_profile
+from scopescan.rules import evaluate_port
 
 
 def puerto(portid: int, name: str = "", product: str = "", version: str = "") -> Port:

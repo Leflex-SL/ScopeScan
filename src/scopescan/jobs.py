@@ -14,14 +14,14 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from . import db, service
 from .config import MAX_CONCURRENT_SCANS
 
-log = logging.getLogger("medscan.jobs")
+log = logging.getLogger("scopescan.jobs")
 
 
 class ScanQueue:
     """Ejecuta escaneos con un limite de concurrencia y permite cancelarlos."""
 
     def __init__(self, max_workers: int = MAX_CONCURRENT_SCANS) -> None:
-        self._pool = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="medscan")
+        self._pool = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="scopescan")
         self._cancels: dict[int, threading.Event] = {}
         self._futures: dict[int, Future] = {}
         self._lock = threading.Lock()

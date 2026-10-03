@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from medscan import analysis, attack_paths, db, nmap_parser
-from medscan.msf_modules import VULNERABLE
+from scopescan import analysis, attack_paths, db, nmap_parser
+from scopescan.msf_modules import VULNERABLE
 
 
 def test_attack_path_encadena_cve_poc_y_msf(nmap_xml):

@@ -224,14 +224,14 @@ $collect = {
     }
 }
 try {
-    if ($env:MEDSCAN_LOCAL -eq '1') {
+    if ($env:SCOPESCAN_LOCAL -eq '1') {
         $result = & $collect
     } else {
-        $result = Invoke-Command -ComputerName $env:MEDSCAN_TARGET -ScriptBlock $collect -ErrorAction Stop
+        $result = Invoke-Command -ComputerName $env:SCOPESCAN_TARGET -ScriptBlock $collect -ErrorAction Stop
     }
     $result | ConvertTo-Json -Depth 5 -Compress
 } catch {
-    [Console]::Error.WriteLine('MEDSCAN_ERROR: ' + $_.Exception.Message)
+    [Console]::Error.WriteLine('SCOPESCAN_ERROR: ' + $_.Exception.Message)
     exit 1
 }
 """
@@ -243,14 +243,14 @@ class InventoryError(RuntimeError):
 
 def collect(host: str, *, local: bool = False) -> dict:
     if sys.platform != "win32":
-        raise InventoryError("El inventario Windows requiere ejecutar Medscan en Windows")
+        raise InventoryError("El inventario Windows requiere ejecutar ScopeScan en Windows")
     powershell = shutil.which("powershell.exe")
     if not powershell:
         raise InventoryError("No se encontro Windows PowerShell")
     command = base64.b64encode(SCRIPT.encode("utf-16-le")).decode("ascii")
     env = os.environ.copy()
-    env["MEDSCAN_TARGET"] = host
-    env["MEDSCAN_LOCAL"] = "1" if local else "0"
+    env["SCOPESCAN_TARGET"] = host
+    env["SCOPESCAN_LOCAL"] = "1" if local else "0"
     try:
         result = subprocess.run(
             [powershell, "-NoProfile", "-NonInteractive", "-EncodedCommand", command],
@@ -262,8 +262,8 @@ def collect(host: str, *, local: bool = False) -> dict:
         raise InventoryError(f"No se pudo ejecutar PowerShell: {exc}") from exc
     if result.returncode:
         stderr = result.stderr or ""
-        detail = stderr.split("MEDSCAN_ERROR: ", 1)[-1].splitlines()[0][:300] if (
-            "MEDSCAN_ERROR: " in stderr
+        detail = stderr.split("SCOPESCAN_ERROR: ", 1)[-1].splitlines()[0][:300] if (
+            "SCOPESCAN_ERROR: " in stderr
         ) else "Comprueba permisos WMI y la configuracion de WinRM"
         raise InventoryError(f"Fallo el inventario de {host}: {detail}")
     try:

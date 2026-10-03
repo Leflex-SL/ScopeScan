@@ -1,4 +1,6 @@
-# Medscan
+# ScopeScan
+
+Repositorio: [Olmen023/ScopeScan](https://github.com/Olmen023/ScopeScan).
 
 Escáner de puertos y vulnerabilidades al estilo Nessus, construido sobre nmap.
 Escanea los 65535 puertos de un objetivo, detecta servicio y versión, ejecuta los
@@ -26,20 +28,29 @@ presenta todo en un panel web con informe exportable.
 | Presentación | `web/` + `report.py` | Panel en vivo e informe HTML autocontenido |
 
 La diferencia con lanzar `nmap` a mano está en la tercera fila. nmap dice *"el
-script `smb-vuln-ms17-010` devolvió este texto"*; Medscan decide si eso es un
+script `smb-vuln-ms17-010` devolvió este texto"*; ScopeScan decide si eso es un
 hallazgo, con qué severidad, qué CVE lleva asociado y qué hay que hacer al
 respecto — que es el trabajo que en Nessus hace un plugin.
 
 ## Instalación
 
-Medscan necesita **nmap instalado en el sistema**. En Windows:
+Para actualizar una instalacion anterior, desinstala el paquete antiguo con
+`python -m pip uninstall medscan` y vuelve a instalar el proyecto. El comando
+es ahora `scopescan` y el paquete Python es `scopescan`. Las variables
+`SCOPESCAN_*` tienen prioridad sobre los alias anteriores `MEDSCAN_*`.
+Las credenciales del panel se leen juntas del mismo prefijo.
+Las instalaciones nuevas guardan el historial en `data/scopescan.sqlite3`;
+si solo existe `data/medscan.sqlite3`, se reutiliza para conservar los escaneos.
+Los informes ya exportados y las copias de seguridad conservan su contenido original.
+
+ScopeScan necesita **nmap instalado en el sistema**. En Windows:
 
 ```bash
 winget install -e --id Insecure.Nmap
 ```
 
 Se recomienda Nmap 7.94 o posterior para no depender de firmas y scripts NSE
-obsoletos. `medscan doctor` avisa cuando detecta una versión anterior.
+obsoletos. `scopescan doctor` avisa cuando detecta una versión anterior.
 
 El instalador incluye Npcap, necesario para el SYN scan y la detección de sistema
 operativo. Después, reinicia la terminal para que `nmap` entre en el PATH.
@@ -54,8 +65,8 @@ python -m venv .venv
 Comprueba que todo está en su sitio:
 
 ```bash
-.venv\Scripts\medscan.exe doctor
-.venv\Scripts\medscan.exe self-test
+.venv\Scripts\scopescan.exe doctor
+.venv\Scripts\scopescan.exe self-test
 ```
 
 ## Uso
@@ -63,7 +74,7 @@ Comprueba que todo está en su sitio:
 ### Panel web
 
 ```bash
-.venv\Scripts\medscan.exe serve
+.venv\Scripts\scopescan.exe serve
 ```
 
 Abre <http://127.0.0.1:8000>. Desde ahí se lanzan escaneos, se sigue el progreso
@@ -77,62 +88,62 @@ rechazan formularios enviados desde otro origen cuando el navegador incluye
 ### Línea de comandos
 
 ```bash
-medscan scan 192.168.1.10                          # perfil de vulnerabilidades, por defecto
-medscan scan 192.168.1.0/24 -p descubrimiento      # solo qué hosts están vivos
-medscan scan 10.0.0.5 -p completo -r informe.html  # 65535 puertos + informe
-medscan list                                       # histórico
-medscan show 3                                     # resultado de un escaneo
-medscan self-test                                  # chequeo local sin nmap ni red
-medscan report 3 -o auditoria.html                 # informe de uno ya hecho
-medscan export 3 -f json -o auditoria.json         # datos completos para automatizar
-medscan export 3 -f csv -o hallazgos.csv           # hallazgos para hoja de calculo
-medscan export 3 -f bundle -o entrega.zip          # HTML + JSON + CSV + artefactos MSF
-medscan enrich 3                                   # CVE candidatas por CPE en NVD
-medscan exploitdb 3                                # PoC publicas por CVE via SearchSploit
-medscan msf 3                                      # verificacion Metasploit (scanner/check)
-medscan msf-catalog                                # modulos MSF allowlistados y guardas
-medscan msf-rc 3 --host 192.168.1.10 --port 445 \
+scopescan scan 192.168.1.10                          # perfil de vulnerabilidades, por defecto
+scopescan scan 192.168.1.0/24 -p descubrimiento      # solo qué hosts están vivos
+scopescan scan 10.0.0.5 -p completo -r informe.html  # 65535 puertos + informe
+scopescan list                                       # histórico
+scopescan show 3                                     # resultado de un escaneo
+scopescan self-test                                  # chequeo local sin nmap ni red
+scopescan report 3 -o auditoria.html                 # informe de uno ya hecho
+scopescan export 3 -f json -o auditoria.json         # datos completos para automatizar
+scopescan export 3 -f csv -o hallazgos.csv           # hallazgos para hoja de calculo
+scopescan export 3 -f bundle -o entrega.zip          # HTML + JSON + CSV + artefactos MSF
+scopescan enrich 3                                   # CVE candidatas por CPE en NVD
+scopescan exploitdb 3                                # PoC publicas por CVE via SearchSploit
+scopescan msf 3                                      # verificacion Metasploit (scanner/check)
+scopescan msf-catalog                                # modulos MSF allowlistados y guardas
+scopescan msf-rc 3 --host 192.168.1.10 --port 445 \
   --module exploit/windows/smb/ms17_010_eternalblue # prepara .rc para msfconsole
-medscan inventory 3 --host 10.0.0.5                # inventario remoto Windows por WinRM
-medscan inventory 3 --host 10.0.0.5 --local        # si Medscan corre en ese equipo
-medscan inventory-linux 3 --host 10.0.0.8 --user audit  # claves o agente OpenSSH
-medscan patches 3                                  # build Windows frente a MSRC
-medscan profiles                                   # ver los perfiles disponibles
+scopescan inventory 3 --host 10.0.0.5                # inventario remoto Windows por WinRM
+scopescan inventory 3 --host 10.0.0.5 --local        # si ScopeScan corre en ese equipo
+scopescan inventory-linux 3 --host 10.0.0.8 --user audit  # claves o agente OpenSSH
+scopescan patches 3                                  # build Windows frente a MSRC
+scopescan profiles                                   # ver los perfiles disponibles
 ```
 
 ### Integraciones opcionales
 
-Metasploit y Exploit-DB son opcionales. Si estan instalados, `medscan doctor`
+Metasploit y Exploit-DB son opcionales. Si estan instalados, `scopescan doctor`
 los detecta; si no, el panel deshabilita sus botones sin impedir escanear.
 
 Variables utiles:
 
 | Variable | Uso |
 |---|---|
-| `MEDSCAN_MSFCONSOLE` | Ruta a `msfconsole` si no esta en `PATH` |
-| `MEDSCAN_ENABLE_EXPLOIT` | `1` habilita el disparo directo de exploits desde el panel; por defecto solo `.rc` |
-| `MEDSCAN_LHOST` | IP local que recibira el payload reverse de Metasploit |
-| `MEDSCAN_LPORT` | Puerto local del payload reverse; por defecto `4444` |
-| `MEDSCAN_SEARCHSPLOIT` | Ruta a `searchsploit` si no esta en `PATH` |
-| `MEDSCAN_PANEL_USER` / `MEDSCAN_PANEL_PASSWORD` | Basic Auth opcional para permitir clientes no locales |
+| `SCOPESCAN_MSFCONSOLE` | Ruta a `msfconsole` si no esta en `PATH` |
+| `SCOPESCAN_ENABLE_EXPLOIT` | `1` habilita el disparo directo de exploits desde el panel; por defecto solo `.rc` |
+| `SCOPESCAN_LHOST` | IP local que recibira el payload reverse de Metasploit |
+| `SCOPESCAN_LPORT` | Puerto local del payload reverse; por defecto `4444` |
+| `SCOPESCAN_SEARCHSPLOIT` | Ruta a `searchsploit` si no esta en `PATH` |
+| `SCOPESCAN_PANEL_USER` / `SCOPESCAN_PANEL_PASSWORD` | Basic Auth opcional para permitir clientes no locales |
 
 La integracion Exploit-DB solo guarda referencias de SearchSploit. No descarga
 ni ejecuta PoC; calcula una relevancia contextual por puerto, servicio y
-producto para separar una PoC generica de una que encaja con lo observado. Para la fase ofensiva controlada, medscan puede preparar un
+producto para separar una PoC generica de una que encaja con lo observado. Para la fase ofensiva controlada, scopescan puede preparar un
 resource script de Metasploit (`.rc`) descargable desde el panel o por CLI
-(`medscan msf-rc`) despues de una verificacion vulnerable/probable. El operador
-lo lanza manualmente con su `msfconsole`. `medscan msf-catalog` muestra el
+(`scopescan msf-rc`) despues de una verificacion vulnerable/probable. El operador
+lo lanza manualmente con su `msfconsole`. `scopescan msf-catalog` muestra el
 catalogo allowlistado de modulos y sus guardas. La explotacion directa desde el panel
 queda separada, registrada, exige confirmacion explicita y ademas requiere
-`MEDSCAN_ENABLE_EXPLOIT=1`.
+`SCOPESCAN_ENABLE_EXPLOIT=1`.
 
 El panel sigue limitado a loopback por defecto. Si necesitas servirlo a otro
-equipo de un laboratorio, configura `MEDSCAN_PANEL_USER` y
-`MEDSCAN_PANEL_PASSWORD`; los clientes no locales deberan autenticarse con Basic
+equipo de un laboratorio, configura `SCOPESCAN_PANEL_USER` y
+`SCOPESCAN_PANEL_PASSWORD`; los clientes no locales deberan autenticarse con Basic
 Auth. Sin esas variables, las conexiones remotas se rechazan aunque el servidor
 escuche en `0.0.0.0`.
 
-El bundle ZIP incluye informe, JSON, CSV y artefactos MSF generados por Medscan.
+El bundle ZIP incluye informe, JSON, CSV y artefactos MSF generados por ScopeScan.
 Para evitar entregables enormes por logs de consola, cada artefacto MSF se
 incluye completo hasta 2 MB; si supera ese tamaño, el ZIP conserva el inicio del
 fichero y añade una nota de truncado dentro del propio artefacto.
@@ -159,7 +170,7 @@ y deja rastro en los logs del objetivo.
 Los perfiles UDP son independientes de los TCP para que su coste sea explícito.
 UDP no completa un handshake: muchos puertos quedan como `open|filtered` y el
 escaneo espera timeouts, por lo que `udp-completo` no debe ser el perfil cotidiano.
-Medscan aplica reglas específicas a DNS, NTP, SNMP, TFTP, SSDP, CLDAP y NetBIOS;
+ScopeScan aplica reglas específicas a DNS, NTP, SNMP, TFTP, SSDP, CLDAP y NetBIOS;
 un número de puerto UDP nunca dispara por sí solo una regla diseñada para TCP.
 
 ## Cómo se asigna la severidad
@@ -193,13 +204,13 @@ menos en el riesgo agregado porque puede haber parches retroportados.
 ## Enriquecimiento NVD
 
 En la ficha de un escaneo terminado se puede pulsar **Buscar CVE candidatas en
-NVD**, o ejecutar `medscan enrich ID`. Es una acción voluntaria: envía los CPE de
-servicios con versión concreta a la API pública de NVD. Medscan convierte los CPE
+NVD**, o ejecutar `scopescan enrich ID`. Es una acción voluntaria: envía los CPE de
+servicios con versión concreta a la API pública de NVD. ScopeScan convierte los CPE
 simples de nmap a CPE 2.3, consulta coincidencias marcadas como vulnerables,
 pagina resultados y guarda una caché de siete días en SQLite. `NVD_API_KEY` es
 opcional y se lee del entorno; nunca se guarda en la base de datos.
 
-Para cada coincidencia se conserva el criterio CPE de NVD. Medscan distingue
+Para cada coincidencia se conserva el criterio CPE de NVD. ScopeScan distingue
 versión exacta, intervalo de versiones y criterios que afectan a todas las
 versiones; descarta las versiones que quedan fuera del intervalo. Si la expresión
 de aplicabilidad exige además otro sistema operativo o componente, lo indica como
@@ -215,16 +226,16 @@ y el estado del enriquecimiento deja constancia del fallo parcial.
 Un CPE ausente, genérico o ambiguo se omite. El CPE de hardware Intel AMT de
 nmap solo se transforma en CPE de firmware cuando el inventario autenticado
 devuelve `ME_System.FWVersion` **y** se selecciona expresamente la casilla del
-panel o `medscan enrich ID --include-firmware`. Esta opcion envia a NVD la
+panel o `scopescan enrich ID --include-firmware`. Esta opcion envia a NVD la
 version de firmware obtenida del equipo. Una coincidencia de NVD sigue necesitando
 comprobar configuración y avisos del fabricante. Si NVD falla, se conservan
 los resultados anteriores y se muestra el error.
 
 ## Aplicabilidad de parches Windows
 
-Tras el inventario Windows, `medscan patches ID` descarga el CVRF mensual público
+Tras el inventario Windows, `scopescan patches ID` descarga el CVRF mensual público
 de Microsoft MSRC. El documento solicitado solo depende del mes: el inventario no
-se envía a Microsoft. Medscan exige una coincidencia exacta de edición, versión y
+se envía a Microsoft. ScopeScan exige una coincidencia exacta de edición, versión y
 arquitectura, y compara `Build.UBR` con `FixedBuild`. Si el build instalado es
 inferior, guarda las CVE pendientes, CVSS, KB y enlace al catálogo. Si MSRC no
 publica un build evaluable, el resultado queda parcial en vez de asumir que está
@@ -234,7 +245,7 @@ corregido. El feed se conserva 20 horas en SQLite.
 
 En la ficha del escaneo, **Inventario Windows autenticado** consulta un host ya
 escaneado. Usa PowerShell Remoting/WinRM con la identidad Windows que ejecuta
-Medscan, o `--local` desde la CLI si el host escaneado es loopback. Esta
+ScopeScan, o `--local` desde la CLI si el host escaneado es loopback. Esta
 restriccion evita atribuir al objetivo remoto el inventario del equipo local. No hay campo
 de contraseña ni se almacenan credenciales. El administrador debe habilitar
 WinRM y dar permisos WMI/registro. Con IP y autenticación integrada puede ser
@@ -250,7 +261,7 @@ que contrastar el build y las KB con los avisos de Microsoft u OEM.
 El inventario lee además `Get-SmbServerConfiguration`, el ajuste efectivo de NLA
 para RDP (priorizando la política de grupo), perfiles activos del firewall,
 estado y antigüedad de firmas de Defender, UAC y protección BitLocker del volumen
-del sistema. Medscan crea hallazgos de **comprobación positiva** cuando observa
+del sistema. ScopeScan crea hallazgos de **comprobación positiva** cuando observa
 una configuración insegura. Los controles ligados a servicios, como SMB y RDP,
 solo aplican cuando el puerto correspondiente está abierto. Al repetir el
 inventario, estos hallazgos y el riesgo agregado se actualizan. Una lectura
@@ -264,7 +275,7 @@ hallazgo y la ausencia de datos de Defender no se interpreta como falta de antiv
 
 ## Inventario Linux autenticado
 
-`medscan inventory-linux ID --host HOST --user USUARIO` usa el cliente OpenSSH
+`scopescan inventory-linux ID --host HOST --user USUARIO` usa el cliente OpenSSH
 del sistema en modo no interactivo. Solo admite claves, certificados o un agente
 ya configurado; no pide ni guarda contraseñas. El host debe estar vivo y formar
 parte del escaneo. Se puede indicar `--port` para un SSH no estándar.
@@ -312,7 +323,7 @@ el número deja de decir nada nuevo.
 ## Límites de la herramienta
 
 El escaneo nmap ve lo que puede observar desde la red. El inventario autenticado
-añade datos locales Windows o Linux cuando se solicita. Medscan evalúa controles
+añade datos locales Windows o Linux cuando se solicita. ScopeScan evalúa controles
 técnicos concretos y el build acumulativo de Windows, pero no incorpora todavía
 los miles de plugins de aplicaciones, firmware OEM y benchmarks auditables que
 mantiene el feed comercial de Nessus. Tampoco sustituye una certificación CIS/ENS.
@@ -337,19 +348,19 @@ o encargos con alcance firmado.
 ```bash
 .venv\Scripts\python.exe -m pytest        # pruebas sin red ni nmap
 .venv\Scripts\python.exe -m ruff check src tests
-.venv\Scripts\medscan.exe self-test       # sanity check local sin tocar la red
+.venv\Scripts\scopescan.exe self-test       # sanity check local sin tocar la red
 ```
 
 Las pruebas no lanzan nmap ni tocan la red: trabajan sobre un XML de ejemplo
 realista (`tests/conftest.py`) y aíslan la base de datos en un directorio
-temporal vía `MEDSCAN_DATA`. `pytest` usa `src` como `pythonpath` y escribe sus
+temporal vía `SCOPESCAN_DATA`. `pytest` usa `src` como `pythonpath` y escribe sus
 temporales en `.pytest_tmp/`, que esta ignorado por git para evitar problemas con
 el directorio temporal del usuario en Windows.
 
 ## Estructura
 
 ```
-src/medscan/
+src/scopescan/
   config.py        rutas, localización de nmap, detección de privilegios
   targets.py       validación y clasificación de objetivos
   profiles.py      perfiles de escaneo -> argumentos de nmap

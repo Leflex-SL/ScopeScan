@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from medscan.targets import InvalidTarget, parse_target, parse_targets
+from scopescan.targets import InvalidTarget, parse_target, parse_targets
 
 
 def test_ip_privada():

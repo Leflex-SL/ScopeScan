@@ -7,7 +7,7 @@ import sqlite3
 
 import pytest
 
-from medscan import (
+from scopescan import (
     compliance,
     db,
     exploitdb,
@@ -17,10 +17,10 @@ from medscan import (
     threat_intel,
     windows_inventory,
 )
-from medscan.authenticated_checks import linux_findings, windows_findings
-from medscan.models import Assessment, Port, Service, Severity
-from medscan.nmap_parser import parse_string
-from medscan.rules import evaluate_port
+from scopescan.authenticated_checks import linux_findings, windows_findings
+from scopescan.models import Assessment, Port, Service, Severity
+from scopescan.nmap_parser import parse_string
+from scopescan.rules import evaluate_port
 
 
 def test_cpe_simple_se_normaliza_sin_adivinar_version():
@@ -118,7 +118,7 @@ def test_priorizacion_cisa_kev_y_epss_usa_cache():
 def test_exploitdb_cruza_cve_con_searchsploit(nmap_xml, tmp_path):
     path = tmp_path / "scan.xml"
     path.write_text(nmap_xml, encoding="utf-8")
-    from medscan import analysis, nmap_parser
+    from scopescan import analysis, nmap_parser
 
     run = nmap_parser.parse_file(path)
     scan_id = db.create_scan(

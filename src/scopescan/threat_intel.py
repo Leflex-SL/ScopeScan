@@ -22,7 +22,7 @@ class ThreatIntelError(RuntimeError):
 
 
 def _fetch_json(url: str, *, limit: int = 12_000_000) -> dict:
-    request = Request(url, headers={"User-Agent": "Medscan/0.2 threat prioritization"})
+    request = Request(url, headers={"User-Agent": "ScopeScan/0.2 threat prioritization"})
     try:
         with urlopen(request, timeout=25) as response:
             payload = response.read(limit + 1)

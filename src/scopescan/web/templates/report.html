@@ -180,7 +180,7 @@ alta o critica:</p>
 {% else %}<p class="muted small">Sin coincidencias Exploit-DB guardadas.</p>{% endif %}
 
 <h2>Ejecuciones de explotacion</h2>
-<p class="small muted">Historial de acciones de explotacion lanzadas desde Medscan. La verificacion Metasploit queda separada.</p>
+<p class="small muted">Historial de acciones de explotacion lanzadas desde ScopeScan. La verificacion Metasploit queda separada.</p>
 {% if exploit_runs %}
 <table><thead><tr><th>Resultado</th><th>Objetivo</th><th>Modulo</th><th>Evidencia</th></tr></thead><tbody>
 {% for run in exploit_runs %}
@@ -281,7 +281,7 @@ firma {{ 'obligatoria' if inv.smb_server.signing_required is sameas true else 'n
 {% endfor %}
 
 <footer>
-  Medscan &middot; escaneo #{{ scan.id }} &middot; informe generado el {{ generated }}.
+  ScopeScan &middot; escaneo #{{ scan.id }} &middot; informe generado el {{ generated }}.
   Documento de uso interno: contiene informacion sobre la exposicion de sistemas propios.
 </footer>
 

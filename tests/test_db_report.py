@@ -5,10 +5,10 @@ import json
 import zipfile
 from pathlib import Path
 
-from medscan import analysis, cli, db, export, report, service
-from medscan.models import Severity
-from medscan.nmap_parser import parse_string
-from medscan.nmap_runner import NmapExecution, build_argv, explain_failure
+from scopescan import analysis, cli, db, export, report, service
+from scopescan.models import Severity
+from scopescan.nmap_parser import parse_string
+from scopescan.nmap_runner import NmapExecution, build_argv, explain_failure
 
 
 def escaneo_guardado(nmap_xml: str, *, private: bool = True) -> int:
@@ -142,7 +142,7 @@ def test_cli_export_json_y_csv(nmap_xml, tmp_path):
 def test_cli_self_test_no_toca_red(capsys):
     assert cli.main(["self-test"]) == 0
     out = capsys.readouterr().out
-    assert "Self-test de Medscan" in out
+    assert "Self-test de ScopeScan" in out
     assert "No se ha lanzado nmap" in out
 
 
@@ -171,10 +171,10 @@ def test_export_bundle_incluye_entregables_y_artifacts_msf(nmap_xml, tmp_path):
 
     with zipfile.ZipFile(bundle) as zf:
         names = set(zf.namelist())
-        assert f"medscan-{scan_id:05d}/report.html" in names
-        assert f"medscan-{scan_id:05d}/scan.json" in names
-        assert f"medscan-{scan_id:05d}/findings.csv" in names
-        assert f"medscan-{scan_id:05d}/metasploit/prepared.rc" in names
+        assert f"scopescan-{scan_id:05d}/report.html" in names
+        assert f"scopescan-{scan_id:05d}/scan.json" in names
+        assert f"scopescan-{scan_id:05d}/findings.csv" in names
+        assert f"scopescan-{scan_id:05d}/metasploit/prepared.rc" in names
         assert all("outside.log" not in name for name in names)
 
 
@@ -198,7 +198,7 @@ def test_export_bundle_trunca_artifacts_grandes(nmap_xml, tmp_path):
     bundle = export.render_bundle(scan_id, max_artifact_bytes=10)
 
     with zipfile.ZipFile(io.BytesIO(bundle)) as zf:
-        data = zf.read(f"medscan-{scan_id:05d}/metasploit/big.log")
+        data = zf.read(f"scopescan-{scan_id:05d}/metasploit/big.log")
     assert data.startswith(b"0123456789")
     assert b"Artefacto truncado" in data
     assert b"ABCDEFGHIJ" not in data

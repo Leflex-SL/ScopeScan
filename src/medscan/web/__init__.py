@@ -1,1 +1,0 @@
-"""Panel web de Medscan."""

@@ -25,7 +25,7 @@ WINDOWS_MSF_PATHS = (
 )
 
 # SearchSploit es el cliente local de Exploit-DB. En Kali suele estar en PATH;
-# en Windows normalmente se apunta explicitamente con MEDSCAN_SEARCHSPLOIT.
+# en Windows normalmente se apunta explicitamente con SCOPESCAN_SEARCHSPLOIT.
 WINDOWS_SEARCHSPLOIT_PATHS = (
     r"C:\exploitdb\searchsploit.bat",
     r"C:\exploitdb\searchsploit",
@@ -39,16 +39,28 @@ MAX_HOSTS_DEFAULT = 256
 MAX_CONCURRENT_SCANS = 2
 
 
+def _setting(name: str, default: str | None = None) -> str | None:
+    """ScopeScan tiene prioridad, incluso si su valor es vacio, sobre el alias anterior."""
+    key = f"SCOPESCAN_{name}"
+    if key in os.environ:
+        return os.environ[key]
+    return os.environ.get(f"MEDSCAN_{name}", default)
+
+
 def data_dir() -> Path:
-    """Directorio de datos (BD, XML crudos, informes). Override: MEDSCAN_DATA."""
-    raw = os.environ.get("MEDSCAN_DATA")
+    """Directorio de datos (BD, XML crudos, informes). Override: SCOPESCAN_DATA."""
+    raw = _setting("DATA")
     path = Path(raw).expanduser() if raw else PROJECT_ROOT / "data"
     path.mkdir(parents=True, exist_ok=True)
     return path
 
 
 def db_path() -> Path:
-    return data_dir() / "medscan.sqlite3"
+    directory = data_dir()
+    current = directory / "scopescan.sqlite3"
+    legacy = directory / "medscan.sqlite3"
+    # Reutiliza el historial existente; evita crear una BD vacia tras actualizar.
+    return legacy if legacy.is_file() and not current.exists() else current
 
 
 def raw_dir() -> Path:
@@ -65,7 +77,7 @@ class NmapNotFound(RuntimeError):
         "  Windows:  winget install -e --id Insecure.Nmap\n"
         "            (o el instalador oficial de https://nmap.org/download.html, con Npcap)\n"
         "  Linux:    sudo apt install nmap\n"
-        "Si esta instalado en otra ruta, exporta MEDSCAN_NMAP con la ruta al ejecutable."
+        "Si esta instalado en otra ruta, exporta SCOPESCAN_NMAP con la ruta al ejecutable."
     )
 
     def __init__(self, msg: str = "") -> None:
@@ -74,11 +86,11 @@ class NmapNotFound(RuntimeError):
 
 def find_nmap() -> str:
     """Devuelve la ruta al ejecutable de nmap o lanza NmapNotFound."""
-    override = os.environ.get("MEDSCAN_NMAP")
+    override = _setting("NMAP")
     if override:
         if Path(override).is_file():
             return override
-        raise NmapNotFound(f"MEDSCAN_NMAP apunta a {override}, que no existe.")
+        raise NmapNotFound(f"SCOPESCAN_NMAP apunta a {override}, que no existe.")
 
     found = shutil.which("nmap")
     if found:
@@ -108,7 +120,7 @@ class MsfConsoleNotFound(RuntimeError):
         "  Linux:    https://docs.metasploit.com/docs/using-metasploit/getting-started/"
         "nightly-installers.html\n"
         "            (o 'sudo apt install metasploit-framework' en Kali)\n"
-        "Si esta en otra ruta, exporta MEDSCAN_MSFCONSOLE con la ruta al ejecutable."
+        "Si esta en otra ruta, exporta SCOPESCAN_MSFCONSOLE con la ruta al ejecutable."
     )
 
     def __init__(self, msg: str = "") -> None:
@@ -117,11 +129,11 @@ class MsfConsoleNotFound(RuntimeError):
 
 def find_msfconsole() -> str:
     """Devuelve la ruta a msfconsole o lanza MsfConsoleNotFound."""
-    override = os.environ.get("MEDSCAN_MSFCONSOLE")
+    override = _setting("MSFCONSOLE")
     if override:
         if Path(override).is_file():
             return override
-        raise MsfConsoleNotFound(f"MEDSCAN_MSFCONSOLE apunta a {override}, que no existe.")
+        raise MsfConsoleNotFound(f"SCOPESCAN_MSFCONSOLE apunta a {override}, que no existe.")
 
     for name in ("msfconsole", "msfconsole.bat"):
         found = shutil.which(name)
@@ -150,18 +162,18 @@ def msf_exploit_enabled() -> bool:
     FastAPI queda detras de una bandera explicita para evitar habilitar una
     superficie ofensiva por accidente en una instalacion normal.
     """
-    raw = os.environ.get("MEDSCAN_ENABLE_EXPLOIT", "")
+    raw = _setting("ENABLE_EXPLOIT", "") or ""
     return raw.strip().lower() in {"1", "true", "yes", "y", "si", "s"}
 
 
 def msf_lhost() -> str:
-    """IP local para el payload reverse. Override: MEDSCAN_LHOST.
+    """IP local para el payload reverse. Override: SCOPESCAN_LHOST.
 
     Sin override se deduce abriendo un socket UDP hacia una IP externa (no envia
     nada): el SO elige la interfaz de salida y de ahi sale la IP local. Si falla,
     cae a 127.0.0.1, que solo sirve para objetivos en la propia maquina.
     """
-    override = os.environ.get("MEDSCAN_LHOST")
+    override = _setting("LHOST")
     if override:
         return override
     import socket
@@ -177,8 +189,8 @@ def msf_lhost() -> str:
 
 
 def msf_lport() -> int:
-    """Puerto de escucha del payload reverse. Override: MEDSCAN_LPORT."""
-    raw = os.environ.get("MEDSCAN_LPORT")
+    """Puerto de escucha del payload reverse. Override: SCOPESCAN_LPORT."""
+    raw = _setting("LPORT")
     if raw and raw.isdigit() and 1 <= int(raw) <= 65535:
         return int(raw)
     return 4444
@@ -190,7 +202,7 @@ class SearchSploitNotFound(RuntimeError):
     INSTALL_HINT = (
         "searchsploit no encontrado. La correlacion con Exploit-DB es opcional:\n"
         "  Kali/Linux: instala el paquete exploitdb y actualiza con searchsploit -u\n"
-        "  Windows:    instala/clona Exploit-DB y exporta MEDSCAN_SEARCHSPLOIT con la ruta "
+        "  Windows:    instala/clona Exploit-DB y exporta SCOPESCAN_SEARCHSPLOIT con la ruta "
         "al ejecutable."
     )
 
@@ -200,12 +212,12 @@ class SearchSploitNotFound(RuntimeError):
 
 def find_searchsploit() -> str:
     """Devuelve la ruta a searchsploit o lanza SearchSploitNotFound."""
-    override = os.environ.get("MEDSCAN_SEARCHSPLOIT")
+    override = _setting("SEARCHSPLOIT")
     if override:
         if Path(override).is_file():
             return override
         raise SearchSploitNotFound(
-            f"MEDSCAN_SEARCHSPLOIT apunta a {override}, que no existe."
+            f"SCOPESCAN_SEARCHSPLOIT apunta a {override}, que no existe."
         )
 
     for name in ("searchsploit", "searchsploit.bat"):
@@ -232,10 +244,14 @@ def panel_auth_credentials() -> tuple[str, str] | None:
     """Credenciales Basic opcionales para exponer el panel fuera de loopback.
 
     Sin credenciales configuradas, el panel sigue aceptando solo clientes locales.
-    Esto evita que `medscan serve --host 0.0.0.0` abra el panel por accidente.
+    Esto evita que `scopescan serve --host 0.0.0.0` abra el panel por accidente.
     """
-    user = os.environ.get("MEDSCAN_PANEL_USER", "").strip()
-    password = os.environ.get("MEDSCAN_PANEL_PASSWORD", "")
+    # No combina un usuario nuevo con una clave de la configuracion anterior.
+    prefix = "SCOPESCAN" if any(
+        key in os.environ for key in ("SCOPESCAN_PANEL_USER", "SCOPESCAN_PANEL_PASSWORD")
+    ) else "MEDSCAN"
+    user = os.environ.get(f"{prefix}_PANEL_USER", "").strip()
+    password = os.environ.get(f"{prefix}_PANEL_PASSWORD", "")
     if user and password:
         return user, password
     return None
@@ -269,7 +285,7 @@ def is_privileged() -> bool:
 
 @dataclass(frozen=True)
 class Environment:
-    """Foto del entorno, para `medscan doctor` y para avisos en el panel."""
+    """Foto del entorno, para `scopescan doctor` y para avisos en el panel."""
 
     nmap_path: str | None
     nmap_version: str | None

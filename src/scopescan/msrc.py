@@ -23,7 +23,7 @@ class MsrcError(RuntimeError):
 def _fetch_json(url: str, *, limit: int = 80_000_000) -> dict:
     request = Request(url, headers={
         "Accept": "application/json",
-        "User-Agent": "Medscan/0.2 Windows patch assessment",
+        "User-Agent": "ScopeScan/0.2 Windows patch assessment",
     })
     try:
         with urlopen(request, timeout=60) as response:

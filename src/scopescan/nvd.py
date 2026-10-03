@@ -207,7 +207,7 @@ class NvdClient:
             "cpeName": cpe, "isVulnerable": "", "resultsPerPage": 2000,
             "startIndex": start,
         })
-        headers = {"User-Agent": "Medscan/0.2 (CPE candidate enrichment)"}
+        headers = {"User-Agent": "ScopeScan/0.2 (CPE candidate enrichment)"}
         if self.api_key:
             headers["apiKey"] = self.api_key
         request = Request(f"{API_URL}?{query}", headers=headers)

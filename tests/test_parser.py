@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import pytest
 
-from medscan import nmap_parser
-from medscan.nmap_parser import NmapParseError, parse_file, parse_string
+from scopescan import nmap_parser
+from scopescan.nmap_parser import NmapParseError, parse_file, parse_string
 
 
 def test_parsea_cabecera(nmap_xml):

@@ -169,7 +169,7 @@ def render_bundle(scan_id: int, *, max_artifact_bytes: int = MAX_BUNDLE_ARTIFACT
     _scan_or_raise(scan_id)
     out = io.BytesIO()
     with zipfile.ZipFile(out, "w", compression=zipfile.ZIP_DEFLATED) as zf:
-        prefix = f"medscan-{scan_id:05d}"
+        prefix = f"scopescan-{scan_id:05d}"
         zf.writestr(f"{prefix}/report.html", report.render_report(scan_id))
         zf.writestr(f"{prefix}/scan.json", render_json(scan_id))
         zf.writestr(f"{prefix}/findings.csv", render_findings_csv(scan_id))
@@ -194,14 +194,14 @@ def _write_limited_artifact(
     with path.open("rb") as fh:
         chunk = fh.read(max_bytes)
     note = (
-        f"\n\n[medscan] Artefacto truncado para el bundle: "
+        f"\n\n[scopescan] Artefacto truncado para el bundle: "
         f"{size} bytes originales, {max_bytes} bytes incluidos.\n"
     ).encode()
     zf.writestr(arcname, chunk + note)
 
 
 def _metasploit_artifacts(scan_id: int) -> list[Path]:
-    """Devuelve solo `.rc`/logs pertenecientes al raw_dir gestionado por medscan."""
+    """Devuelve solo `.rc`/logs pertenecientes al raw_dir gestionado por scopescan."""
     base = raw_dir().resolve()
     artifacts: list[Path] = []
     seen: set[Path] = set()

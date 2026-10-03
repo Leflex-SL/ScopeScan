@@ -239,7 +239,7 @@ def collect(
         raise InventoryError("Nombre de usuario SSH invalido")
     if local:
         if os.name == "nt":
-            raise InventoryError("El inventario Linux local requiere ejecutar Medscan en Linux")
+            raise InventoryError("El inventario Linux local requiere ejecutar ScopeScan en Linux")
         argv = ["sh", "-s"]
     else:
         ssh = shutil.which("ssh")

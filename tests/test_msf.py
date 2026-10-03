@@ -11,8 +11,8 @@ from pathlib import Path
 
 import pytest
 
-from medscan import analysis, cli, db, msf, msf_modules, nmap_parser
-from medscan.msf_modules import EXPLOITED, LIKELY, SAFE, UNKNOWN, VULNERABLE
+from scopescan import analysis, cli, db, msf, msf_modules, nmap_parser
+from scopescan.msf_modules import EXPLOITED, LIKELY, SAFE, UNKNOWN, VULNERABLE
 
 # --- catalogo ----------------------------------------------------------------
 

@@ -63,7 +63,7 @@ async def lifespan(app: FastAPI):
     QUEUE.shutdown()
 
 
-app = FastAPI(title="Medscan", lifespan=lifespan)
+app = FastAPI(title="ScopeScan", lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
 
 
@@ -80,7 +80,7 @@ async def local_access_only(request: Request, call_next):
     if not local and not _basic_auth_ok(request):
         headers = {}
         if panel_auth_enabled():
-            headers["WWW-Authenticate"] = 'Basic realm="Medscan"'
+            headers["WWW-Authenticate"] = 'Basic realm="ScopeScan"'
         return PlainTextResponse(
             "El panel solo acepta conexiones locales o autenticacion configurada",
             status_code=403,
@@ -356,7 +356,7 @@ def scan_export_json(scan_id: int):
         export.render_json(scan_id),
         media_type="application/json",
         headers={
-            "Content-Disposition": f'attachment; filename="medscan-{scan_id:05d}.json"'
+            "Content-Disposition": f'attachment; filename="scopescan-{scan_id:05d}.json"'
         },
     )
 
@@ -370,7 +370,7 @@ def scan_findings_csv(scan_id: int):
         media_type="text/csv; charset=utf-8",
         headers={
             "Content-Disposition": (
-                f'attachment; filename="medscan-{scan_id:05d}-findings.csv"'
+                f'attachment; filename="scopescan-{scan_id:05d}-findings.csv"'
             )
         },
     )
@@ -384,7 +384,7 @@ def scan_bundle_zip(scan_id: int):
         export.render_bundle(scan_id),
         media_type="application/zip",
         headers={
-            "Content-Disposition": f'attachment; filename="medscan-{scan_id:05d}.zip"'
+            "Content-Disposition": f'attachment; filename="scopescan-{scan_id:05d}.zip"'
         },
     )
 
@@ -609,7 +609,7 @@ def msf_exploit(
             status_code=409,
             detail=(
                 "La explotacion directa esta deshabilitada. Usa Preparar .rc "
-                "o define MEDSCAN_ENABLE_EXPLOIT=1."
+                "o define SCOPESCAN_ENABLE_EXPLOIT=1."
             ),
         )
     # Casilla de autorizacion obligatoria: explotar es una accion deliberada.

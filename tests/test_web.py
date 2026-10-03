@@ -7,10 +7,10 @@ import base64
 import pytest
 from fastapi.testclient import TestClient
 
-from medscan import analysis, db
-from medscan.msf_modules import VULNERABLE
-from medscan.nmap_parser import parse_string
-from medscan.web import app as web_app
+from scopescan import analysis, db
+from scopescan.msf_modules import VULNERABLE
+from scopescan.nmap_parser import parse_string
+from scopescan.web import app as web_app
 
 
 class ColaFalsa:
@@ -63,14 +63,14 @@ def test_panel_rechaza_cliente_remoto():
 
 
 def test_panel_remoto_permite_basic_auth_configurado(monkeypatch):
-    monkeypatch.setenv("MEDSCAN_PANEL_USER", "audit")
-    monkeypatch.setenv("MEDSCAN_PANEL_PASSWORD", "secret")
+    monkeypatch.setenv("SCOPESCAN_PANEL_USER", "audit")
+    monkeypatch.setenv("SCOPESCAN_PANEL_PASSWORD", "secret")
     token = base64.b64encode(b"audit:secret").decode()
     remote = TestClient(web_app.app, client=("203.0.113.10", 50000))
 
     denied = remote.get("/")
     assert denied.status_code == 403
-    assert denied.headers["www-authenticate"] == 'Basic realm="Medscan"'
+    assert denied.headers["www-authenticate"] == 'Basic realm="ScopeScan"'
 
     allowed = remote.get("/", headers={"Authorization": f"Basic {token}"})
     assert allowed.status_code == 200
@@ -310,7 +310,7 @@ def test_enriquecimiento_y_inventario_visibles(client, monkeypatch, nmap_xml):
 
 
 def test_panel_descarga_rc_metasploit_sin_lanzar_exploit(client, monkeypatch, nmap_xml, tmp_path):
-    monkeypatch.delenv("MEDSCAN_ENABLE_EXPLOIT", raising=False)
+    monkeypatch.delenv("SCOPESCAN_ENABLE_EXPLOIT", raising=False)
     scan_id = db.create_scan(name="smb", targets="192.168.1.10", profile="rapido")
     db.save_results(scan_id, parse_string(nmap_xml), [], 0)
     db.set_status(scan_id, "done")

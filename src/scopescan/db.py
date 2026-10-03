@@ -361,6 +361,9 @@ CREATE TABLE exploit_runs (
 );
 CREATE INDEX IF NOT EXISTS idx_exploit_runs_scan ON exploit_runs(scan_id, started_at DESC);
 """)
+        from .continuity import migrate
+
+        migrate(conn)
 
 
 def create_scan(
@@ -371,6 +374,8 @@ def create_scan(
     target_private: bool = True,
     authorized_by: str = "",
     notes: str = "",
+    scope_id: int | None = None,
+    execution_context: dict[str, Any] | None = None,
 ) -> int:
     with connect() as conn:
         cur = conn.execute(
@@ -379,7 +384,10 @@ def create_scan(
                VALUES (?, ?, ?, 'queued', ?, ?, ?, ?)""",
             (name, targets, profile, now(), int(target_private), authorized_by, notes),
         )
-        return int(cur.lastrowid)
+        scan_id = int(cur.lastrowid)
+        conn.execute("UPDATE scans SET scope_id=?,execution_context=? WHERE id=?",
+                     (scope_id, json.dumps(execution_context or {}), scan_id))
+        return scan_id
 
 
 def set_status(scan_id: int, status: str, *, error: str | None = None) -> None:
@@ -397,6 +405,14 @@ def set_status(scan_id: int, status: str, *, error: str | None = None) -> None:
     values.append(scan_id)
     with connect() as conn:
         conn.execute(f"UPDATE scans SET {', '.join(fields)} WHERE id = ?", values)
+        if status in {"done", "failed", "cancelled"}:
+            from .continuity import reconcile, sync_enrichment
+
+            reconcile(conn, scan_id)
+            if status == "done":
+                inventory_hosts = conn.execute("SELECT host FROM host_inventory WHERE scan_id=?", (scan_id,)).fetchall()
+                for inventory_host in inventory_hosts:
+                    sync_enrichment(conn, scan_id, inventory_host["host"])
 
 
 def set_progress(scan_id: int, percent: float, task: str = "") -> None:
@@ -469,8 +485,9 @@ def save_results(scan_id: int, run: NmapRun, findings: list[Finding], risk: int)
             conn.execute(
                 """INSERT INTO findings (scan_id, host, port, protocol, service, title,
                                          severity, source, description, evidence,
-                                         remediation, cvss, cves, confirmed, assessment)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                                         remediation, cvss, cves, confirmed, assessment,
+                                         rule_id, component)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     scan_id,
                     finding.host,
@@ -487,6 +504,8 @@ def save_results(scan_id: int, run: NmapRun, findings: list[Finding], risk: int)
                     json.dumps(finding.cve_ids),
                     int(finding.confirmed),
                     finding.assessment.value,
+                    finding.rule_id or finding.source,
+                    finding.component,
                 ),
             )
 
@@ -495,6 +514,25 @@ def save_results(scan_id: int, run: NmapRun, findings: list[Finding], risk: int)
                                 risk_score = ?, progress = 100 WHERE id = ?""",
             (run.hosts_up, run.hosts_total, run.elapsed, risk, scan_id),
         )
+        from dataclasses import asdict
+
+        from .continuity import normal_host, persist
+
+        context = json.loads(conn.execute("SELECT execution_context FROM scans WHERE id=?",
+                                          (scan_id,)).fetchone()[0] or "{}")
+        coverage = dict(context.get("coverage", {}), **run.coverage)
+        provenance = run.provenance or context.get("provenance", {})
+        if isinstance(provenance, dict) and provenance.get("imported"):
+            coverage["provenance"] = "imported:" + str(provenance.get("source", "external"))
+        normalized_findings = [asdict(f) for f in findings]
+        pending = {"hosts": [normal_host(h) for h in run.hosts], "findings": normalized_findings,
+                       "coverage": coverage, "observed_at": run.start or None,
+                       "success": run.exit_status == "success"}
+        conn.execute("UPDATE scans SET continuity_pending=? WHERE id=?", (json.dumps(pending), scan_id))
+        # Source args do not establish actual execution coverage.
+        status = conn.execute("SELECT status FROM scans WHERE id=?", (scan_id,)).fetchone()[0]
+        persist(conn, scan_id, run.hosts, normalized_findings, coverage,
+                run.start or None, success=status == "done" and run.exit_status == "success")
 
 
 def list_scans(limit: int = 50, *, offset: int = 0, search: str = "") -> list[sqlite3.Row]:
@@ -739,6 +777,9 @@ def _delete_scan_rows(conn: sqlite3.Connection, scan_id: int) -> None:
                   "cve_candidates", "host_inventory", "findings", "ports", "hosts"):
         conn.execute(f"DELETE FROM {table} WHERE scan_id = ?", (scan_id,))
     conn.execute("DELETE FROM scans WHERE id = ?", (scan_id,))
+    from .continuity import after_scan_deletion
+
+    after_scan_deletion(conn, scan_id)
 
 
 def request_scan_deletion(scan_id: int, *, defer: bool = False) -> bool:
@@ -828,6 +869,13 @@ def put_nvd_cache(cpe: str, candidates: list[dict[str, Any]]) -> None:
 
 
 def replace_cve_candidates(scan_id: int, rows: list[dict[str, Any]]) -> None:
+    import math
+
+    for row in rows:
+        for field, maximum in (("cvss", 10), ("epss", 1), ("epss_percentile", 1)):
+            value = row.get(field)
+            if value is not None and (isinstance(value, bool) or not math.isfinite(float(value)) or not 0 <= float(value) <= maximum):
+                raise ValueError(f"Invalid {field}")
     with connect() as conn:
         conn.execute("DELETE FROM cve_candidates WHERE scan_id = ?", (scan_id,))
         conn.executemany(
@@ -849,6 +897,11 @@ def replace_cve_candidates(scan_id: int, rows: list[dict[str, Any]]) -> None:
                 for row in rows
             ],
         )
+        for row in rows:
+            conn.execute("UPDATE cve_candidates SET kev_assessed=?,kev_checked_at=? WHERE scan_id=? AND host=? AND port=? AND protocol=? AND queried_cpe=? AND cve_id=?", (int(row["kev_assessed"]) if row.get("kev_assessed") is not None else None, row.get("kev_checked_at"), scan_id, row["host"], row["port"], row["protocol"], row["queried_cpe"], row["cve_id"]))
+        from .continuity import sync_enrichment
+
+        sync_enrichment(conn, scan_id)
 
 
 def get_cve_candidates(scan_id: int) -> list[sqlite3.Row]:
@@ -900,11 +953,13 @@ def save_host_inventory(
             conn.executemany(
                 """INSERT INTO findings (scan_id, host, port, protocol, service, title,
                    severity, source, description, evidence, remediation, cvss, cves,
-                   confirmed, assessment) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   confirmed, assessment, rule_id, component)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 [
                     (scan_id, f.host, f.port, f.protocol, f.service, f.title,
                      int(f.severity), f.source, f.description, f.evidence, f.remediation,
-                     f.cvss, json.dumps(f.cve_ids), int(f.confirmed), f.assessment.value)
+                     f.cvss, json.dumps(f.cve_ids), int(f.confirmed), f.assessment.value,
+                     f.rule_id or f.source, f.component)
                     for f in findings
                 ],
             )
@@ -936,6 +991,9 @@ def save_host_inventory(
                     for item in controls
                 ],
             )
+        from .continuity import sync_enrichment
+
+        sync_enrichment(conn, scan_id, host)
 
 
 def get_host_inventories(scan_id: int) -> dict[str, dict[str, Any]]:
@@ -1085,6 +1143,9 @@ def replace_windows_patch_assessment(
             "UPDATE scans SET risk_score = ? WHERE id = ?",
             (risk_score_evidence(risk_evidence), scan_id),
         )
+        from .continuity import sync_enrichment
+
+        sync_enrichment(conn, scan_id, host)
 
 
 def get_windows_patch_statuses(scan_id: int) -> list[sqlite3.Row]:
@@ -1159,5 +1220,322 @@ def reset_stale_enrichments() -> None:
         conn.execute(
             """UPDATE enrichment_jobs SET status='failed',
                error='Interrumpido al reiniciar el servidor', updated_at=?
-               WHERE status='running'""", (now(),)
+            WHERE status='running'""", (now(),)
         )
+
+
+def set_scan_context(scan_id: int, *, scope_id: int | None = None,
+                     execution_context: dict[str, Any] | None = None) -> None:
+    """Attach operator scope/execution metadata before results are persisted."""
+    with connect() as conn:
+        scan = conn.execute("SELECT * FROM scans WHERE id=?", (scan_id,)).fetchone()
+        if scan is None:
+            raise ValueError("Unknown scan")
+        context = json.loads(scan["execution_context"] or "{}")
+        context.update(execution_context or {})
+        conn.execute("UPDATE scans SET scope_id=?,execution_context=? WHERE id=?",
+                     (scope_id if scope_id is not None else scan["scope_id"], json.dumps(context), scan_id))
+
+
+def create_scope(*, name: str, targets: str, exclusions: str, profile: str,
+                 authorized_by: str, notes: str = "", pinned_targets: list[str],
+                 resolutions: dict[str, Any], max_hosts: int = 4096) -> int:
+    specification = {"targets": targets, "exclusions": exclusions, "profile": profile,
+                         "authorized_by": authorized_by, "notes": notes,
+                         "pinned_targets": pinned_targets, "resolutions": resolutions,
+                         "max_hosts": max_hosts}
+    with connect() as conn:
+        cur = conn.execute("INSERT INTO saved_scopes(name,specification,created_at) VALUES(?,?,?)",
+                           (name, json.dumps(specification), now()))
+        return int(cur.lastrowid)
+
+
+def get_scope(scope_id: int) -> dict[str, Any] | None:
+    with connect() as conn:
+        row = conn.execute("SELECT * FROM saved_scopes WHERE id=?", (scope_id,)).fetchone()
+        if row is None:
+            return None
+        return dict(json.loads(row["specification"]), id=row["id"], name=row["name"], created_at=row["created_at"])
+
+
+def list_scopes(*, search: str = "", limit: int = 100, offset: int = 0) -> tuple[list[dict], int]:
+    with connect() as conn:
+        total = conn.execute("SELECT COUNT(*) FROM saved_scopes WHERE name LIKE ?", ("%" + search + "%",)).fetchone()[0]
+        rows = conn.execute("SELECT * FROM saved_scopes WHERE name LIKE ? ORDER BY id DESC LIMIT ? OFFSET ?",
+                            ("%" + search + "%", min(max(1, limit), 1000), max(0, offset)))
+        return [dict(json.loads(r["specification"]), id=r["id"], name=r["name"], created_at=r["created_at"]) for r in rows], total
+
+
+def delete_scope(scope_id: int) -> None:
+    with connect() as conn:
+        conn.execute("DELETE FROM saved_scopes WHERE id=?", (scope_id,))
+
+
+def update_scope(scope_id: int, *, name: str, targets: str, exclusions: str, profile: str,
+                 authorized_by: str, notes: str = "", pinned_targets: list[str],
+                 resolutions: dict[str, Any], max_hosts: int = 4096) -> None:
+    specification = {"targets": targets, "exclusions": exclusions, "profile": profile,
+                     "authorized_by": authorized_by, "notes": notes,
+                     "pinned_targets": pinned_targets, "resolutions": resolutions,
+                     "max_hosts": max_hosts}
+    with connect() as conn:
+        cursor = conn.execute("UPDATE saved_scopes SET name=?,specification=? WHERE id=?", (name, json.dumps(specification), scope_id))
+        if not cursor.rowcount:
+            raise ValueError("Unknown scope")
+
+
+def get_finding(finding_id: str) -> dict[str, Any] | None:
+    from .continuity import current_item
+
+    with connect() as conn:
+        row = conn.execute("SELECT * FROM current_findings WHERE id=?", (finding_id,)).fetchone()
+        if row is None:
+            return None
+        item = current_item(row)
+        asset = conn.execute("SELECT namespace,scope_id FROM assets WHERE id=?", (row["asset_id"],)).fetchone()
+        item.update(namespace=asset["namespace"], scope_id=asset["scope_id"])
+        return item
+
+
+get_current_finding = get_finding
+
+
+def list_current_findings(*, scope_id: int | None = None, asset_id: str | None = None,
+                          status: str | None = None, search: str = "", limit: int = 100,
+                          offset: int = 0, min_severity: int = 0,
+                          assessment: str | None = None,
+                          lifecycle: str | None = None) -> tuple[list[dict], int]:
+    from .continuity import current_item
+
+    clauses, params = ["1=1"], []
+    for column, value in (("a.scope_id", scope_id), ("f.asset_id", asset_id), ("f.status", status)):
+        if value is not None:
+            clauses.append(column + "=?")
+            params.append(value)
+    clauses.append("json_extract(f.payload,'$.severity')>=?")
+    params.append(min_severity)
+    for column, value in (("json_extract(f.payload,'$.assessment')", assessment), ("f.lifecycle", lifecycle)):
+        if value is not None:
+            clauses.append(column + "=?")
+            params.append(value)
+    clauses.append("(json_extract(f.payload,'$.title') LIKE ? OR a.address LIKE ? OR f.rule_id LIKE ? OR json_extract(f.payload,'$.host') LIKE ?)")
+    params.extend(["%" + search + "%"] * 4)
+    query = " FROM current_findings f JOIN assets a ON a.id=f.asset_id WHERE " + " AND ".join(clauses)
+    with connect() as conn:
+        total = conn.execute("SELECT COUNT(*)" + query, params).fetchone()[0]
+        items = conn.execute("SELECT f.*" + query + " ORDER BY json_extract(f.payload,'$.severity') DESC,f.id LIMIT ? OFFSET ?",
+                             (*params, min(max(1, limit), 1000), max(0, offset)))
+        return [current_item(row) for row in items], total
+
+
+def _asset_risk(conn, row) -> tuple[dict, int]:
+    from .risk import asset_risk
+    findings = [dict(r) for r in conn.execute("""SELECT id,scan_id,status,lifecycle,port,protocol,
+      json_extract(payload,'$.host') AS host,json_extract(payload,'$.severity') AS severity,
+      json_extract(payload,'$.assessment') AS assessment,json_extract(payload,'$.cve_ids') AS cves
+      FROM current_findings WHERE asset_id=?""", (row["id"],))]
+    for finding in findings:
+        finding["cve_ids"] = json.loads(finding.pop("cves") or "[]")
+    candidate_scans = {f["scan_id"] for f in findings if f["scan_id"]}
+    if row["latest_scan_id"]:
+        candidate_scans.add(row["latest_scan_id"])
+    candidates = []
+    for candidate_scan in candidate_scans:
+        candidates.extend(dict(r) for r in conn.execute("SELECT host,port,protocol,cve_id,known_exploited,kev_assessed,kev_checked_at,epss,epss_date FROM cve_candidates WHERE scan_id=?", (candidate_scan,)))
+    risk = asset_risk(findings, address=row["address"], criticality=row["criticality"], candidates=candidates)
+    return risk, sum(f["lifecycle"] not in {"resolved", "evidence_unavailable"} and f["status"] != "closed" for f in findings)
+
+
+def _asset_item(conn, row, *, detail: bool = False) -> dict:
+    item = {key: row[key] for key in ("id", "namespace", "scope_id", "address", "criticality", "latest_at", "latest_scan_id")}
+    item["risk"], item["finding_count"] = _asset_risk(conn, row)
+    risk = item["risk"]
+    risk["factor_total"] = len(risk["factors"])
+    risk["factors"] = risk["factors"][:100] if detail else []
+    risk["factors_url"] = f"/api/assets/{row['id']}/risk-factors"
+    item["findings_url"] = f"/api/current-findings?asset_id={row['id']}"
+    item["observations_url"] = f"/api/assets/{row['id']}/observations"
+    item["aliases"] = [dict(r) for r in conn.execute("SELECT address,kind FROM asset_aliases WHERE asset_id=? ORDER BY kind,address LIMIT 100", (row["id"],))]
+    item["alias_count"] = conn.execute("SELECT COUNT(*) FROM asset_aliases WHERE asset_id=?", (row["id"],)).fetchone()[0]
+    if detail:
+        ports, total = _asset_ports(conn, row["id"], limit=100, offset=0)
+        item["current_state"] = {"ports": ports, "ports_total": total,
+                                 "ports_url": f"/api/assets/{row['id']}/ports"}
+    return item
+
+
+def _asset_ports(conn, asset_id: str, *, limit: int, offset: int) -> tuple[list[dict], int]:
+    query = " FROM assets a,json_each(a.latest_snapshot,'$.ports') p WHERE a.id=?"
+    total = conn.execute("SELECT COUNT(*)" + query, (asset_id,)).fetchone()[0]
+    fields = ("address", "portid", "protocol", "state", "service_name", "product", "version", "current_assessment", "network_scan_id")
+    columns = ",".join("substr(json_extract(p.value,'$." + field + "'),1,256) AS " + field if field not in {"portid", "network_scan_id"} else "json_extract(p.value,'$." + field + "') AS " + field for field in fields)
+    rows = conn.execute("SELECT " + columns + query + " ORDER BY p.key LIMIT ? OFFSET ?", (asset_id, min(max(1, limit), 100), max(0, offset)))
+    return [dict(r) for r in rows], total
+
+
+def list_asset_ports(asset_id: str, *, limit: int = 100, offset: int = 0) -> tuple[list[dict], int]:
+    with connect() as conn:
+        return _asset_ports(conn, asset_id, limit=limit, offset=offset)
+
+
+def list_asset_risk_factors(asset_id: str, *, limit: int = 100, offset: int = 0) -> tuple[list[dict], int]:
+    with connect() as conn:
+        row = conn.execute("SELECT id,address,criticality,latest_scan_id FROM assets WHERE id=?", (asset_id,)).fetchone()
+        if row is None:
+            return [], 0
+        risk, _ = _asset_risk(conn, row)
+        return risk["factors"][max(0, offset):max(0, offset) + min(max(1, limit), 100)], len(risk["factors"])
+
+
+def list_assets(*, scope_id: int | None = None, search: str = "", limit: int = 100,
+                offset: int = 0) -> tuple[list[dict], int]:
+    query = " FROM assets WHERE (address LIKE ? OR EXISTS (SELECT 1 FROM asset_aliases a WHERE a.asset_id=assets.id AND a.address LIKE ?))"
+    params: list[Any] = ["%" + search + "%"] * 2
+    if scope_id is not None:
+        query += " AND scope_id=?"
+        params.append(scope_id)
+    with connect() as conn:
+        total = conn.execute("SELECT COUNT(*)" + query, params).fetchone()[0]
+        rows = conn.execute("SELECT id,namespace,scope_id,address,criticality,latest_at,latest_scan_id" + query + " ORDER BY latest_at DESC,id LIMIT ? OFFSET ?",
+                            (*params, min(max(1, limit), 1000), max(0, offset))).fetchall()
+        return [_asset_item(conn, row) for row in rows], total
+
+
+def get_asset(asset_id: str) -> dict | None:
+    with connect() as conn:
+        row = conn.execute("SELECT id,namespace,scope_id,address,criticality,latest_at,latest_scan_id FROM assets WHERE id=?", (asset_id,)).fetchone()
+        if row is None:
+            return None
+        item = _asset_item(conn, row, detail=True)
+        query = """ FROM (SELECT asset_id,scan_id,observed_at,snapshot,coverage,'scan' AS kind
+                           FROM asset_observations UNION ALL
+                           SELECT asset_id,scan_id,observed_at,snapshot,coverage,kind
+                           FROM enrichment_observations) WHERE asset_id=?"""
+        item["observation_count"] = conn.execute("SELECT COUNT(*)" + query, (asset_id,)).fetchone()[0]
+        return item
+
+
+def list_asset_observations(asset_id: str, *, limit: int = 100, offset: int = 0,
+                            summaries: bool = False) -> tuple[list[dict], int]:
+    with connect() as conn:
+        query = """ FROM (SELECT asset_id,scan_id,observed_at,snapshot,coverage,'scan' AS kind
+                           FROM asset_observations UNION ALL
+                           SELECT asset_id,scan_id,observed_at,snapshot,coverage,kind
+                           FROM enrichment_observations) WHERE asset_id=?"""
+        total = conn.execute("SELECT COUNT(*)" + query, (asset_id,)).fetchone()[0]
+        projection = "asset_id,scan_id,observed_at,kind,json_object('state',json_extract(snapshot,'$.state')) AS snapshot,json_object('status',json_extract(coverage,'$.status'),'engine',json_extract(coverage,'$.engine')) AS coverage" if summaries else "*"
+        rows = conn.execute("SELECT " + projection + query + " ORDER BY observed_at DESC LIMIT ? OFFSET ?", (asset_id, min(max(1, limit), 1000), max(0, offset)))
+        return [dict(dict(r), snapshot=json.loads(r["snapshot"]), coverage=json.loads(r["coverage"])) for r in rows], total
+
+
+def current_summary() -> dict:
+    from .continuity import current_item
+
+    with connect() as conn:
+        rows = [current_item(r) for r in conn.execute("SELECT * FROM current_findings WHERE status!='closed' AND lifecycle NOT IN ('resolved','evidence_unavailable')")]
+        return {"assets": conn.execute("SELECT COUNT(*) FROM assets WHERE latest_scan_id IS NOT NULL").fetchone()[0],
+                "findings": len(rows), "severity": {s.slug: sum(int(r["severity"]) == int(s) for r in rows) for s in Severity},
+                "assessment": {a.value: sum(r["assessment"] == a.value for r in rows) for a in Assessment},
+                "not_assessed": sum(r["lifecycle"] == "not_assessed" for r in rows),
+                "expired_exceptions": sum(r["exception_expired"] for r in rows)}
+
+
+def scan_delta(scan_id: int) -> dict:
+    with connect() as conn:
+        row = conn.execute("SELECT delta FROM scan_deltas WHERE scan_id=?", (scan_id,)).fetchone()
+        return json.loads(row[0]) if row else {"hosts": [], "ports": [], "services": [], "findings": [], "coverage": {"status": "unknown"}, "warnings": ["No persisted comparison"]}
+
+
+def add_asset_alias(asset_id: str, address: str, *, actor: str) -> None:
+    import ipaddress
+
+    address = str(ipaddress.ip_address(address))
+    if not actor.strip():
+        raise ValueError("Actor required")
+    with connect() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        asset = conn.execute("SELECT * FROM assets WHERE id=?", (asset_id,)).fetchone()
+        if asset is None:
+            raise ValueError("Unknown asset")
+        existing = conn.execute("SELECT asset_id FROM asset_aliases WHERE namespace=? AND address=? AND kind='address'", (asset["namespace"], address)).fetchone()
+        if existing and existing[0] != asset_id:
+            raise ValueError("Address belongs to a different asset; merging is not inferred")
+        conn.execute("INSERT OR IGNORE INTO asset_aliases(namespace,address,asset_id,actor) VALUES(?,?,?,?)", (asset["namespace"], address, asset_id, actor))
+        conn.execute("INSERT INTO asset_actions(asset_id,actor,created_at,action,payload) VALUES(?,?,?,'alias',?)", (asset_id, actor, now(), json.dumps({"address": address})))
+
+
+def set_asset_criticality(asset_id: str, criticality: int, *, actor: str) -> None:
+    if criticality not in range(1, 6) or not actor.strip():
+        raise ValueError("Criticality must be 1..5 and actor is required")
+    with connect() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        cursor = conn.execute("UPDATE assets SET criticality=? WHERE id=?", (criticality, asset_id))
+        if not cursor.rowcount:
+            raise ValueError("Unknown asset")
+        conn.execute("INSERT INTO asset_actions(asset_id,actor,created_at,action,payload) VALUES(?,?,?,'criticality',?)", (asset_id, actor, now(), json.dumps({"criticality": criticality})))
+
+
+def update_asset_metadata(asset_id: str, criticality: int, *, alias: str = "", actor: str) -> None:
+    """Validate combined metadata before any mutation; one transaction and audit."""
+    import ipaddress
+
+    if type(criticality) is not int or criticality not in range(1, 6) or not actor.strip():
+        raise ValueError("Criticality must be 1..5 and actor is required")
+    address = str(ipaddress.ip_address(alias)) if alias.strip() else ""
+    with connect() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        asset = conn.execute("SELECT * FROM assets WHERE id=?", (asset_id,)).fetchone()
+        if asset is None:
+            raise ValueError("Unknown asset")
+        if address:
+            existing = conn.execute("SELECT asset_id FROM asset_aliases WHERE namespace=? AND address=? AND kind='address'", (asset["namespace"], address)).fetchone()
+            if existing and existing[0] != asset_id:
+                raise ValueError("Address belongs to a different asset")
+            conn.execute("INSERT OR IGNORE INTO asset_aliases(namespace,address,asset_id,actor) VALUES(?,?,?,?)", (asset["namespace"], address, asset_id, actor))
+        conn.execute("UPDATE assets SET criticality=? WHERE id=?", (criticality, asset_id))
+        conn.execute("INSERT INTO asset_actions(asset_id,actor,created_at,action,payload) VALUES(?,?,?,'metadata',?)", (asset_id, actor, now(), json.dumps({"criticality": criticality, "alias": address})))
+
+
+def update_remediation(finding_id: str, *, actor: str, owner: str | None = None,
+                       status: str | None = None, due_at: str | None = None,
+                       exception_until: str | None = None, evidence: str | None = None,
+                       verification_scan_id: int | None = None) -> dict:
+    from .continuity import current_item, timestamp
+
+    if not actor.strip():
+        raise ValueError("Actor required")
+    if status is not None and status not in {"open", "in_progress", "exception", "closed"}:
+        raise ValueError("Invalid remediation status")
+    for value in (due_at, exception_until):
+        if value:
+            timestamp(value)
+    with connect() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute("SELECT * FROM current_findings WHERE id=?", (finding_id,)).fetchone()
+        if row is None:
+            raise ValueError("Unknown finding")
+        before = current_item(row)
+        after = dict(before)
+        for field, value in (("owner", owner), ("status", status), ("due_at", due_at), ("exception_until", exception_until)):
+            if value is not None:
+                after[field] = value
+        if after["status"] == "exception" and (not after["exception_until"] or timestamp(after["exception_until"]) <= timestamp() or not evidence or len(evidence.strip()) < 10):
+            raise ValueError("Exception requires future expiry and meaningful rationale")
+        if status == "closed":
+            if row["lifecycle"] != "resolved" or verification_scan_id != row["verification_scan_id"] or not evidence or len(evidence.strip()) < 10:
+                raise ValueError("Closure requires compatible successful verification and meaningful evidence")
+            verification = conn.execute("SELECT * FROM scans WHERE id=?", (verification_scan_id,)).fetchone()
+            if verification is None or verification["status"] != "done":
+                raise ValueError("Verification scan must be completed successfully")
+            context = json.loads(verification["execution_context"] or "{}")
+            if finding_id not in context.get("verification_of", []):
+                raise ValueError("Verification must explicitly assess this finding")
+            after["closure_evidence"] = evidence.strip()
+        conn.execute("UPDATE current_findings SET owner=?,status=?,due_at=?,exception_until=?,closure_evidence=? WHERE id=?", (after["owner"], after["status"], after["due_at"], after["exception_until"], after["closure_evidence"], finding_id))
+        conn.execute("INSERT INTO remediation_actions(finding_id,actor,created_at,before_state,after_state,evidence,verification_scan_id) VALUES(?,?,?,?,?,?,?)", (finding_id, actor, now(), json.dumps(before), json.dumps(after), evidence or "", verification_scan_id))
+        return after
+
+
+def remediation_history(finding_id: str) -> list[dict]:
+    with connect() as conn:
+        return [dict(dict(row), before_state=json.loads(row["before_state"]), after_state=json.loads(row["after_state"])) for row in conn.execute("SELECT * FROM remediation_actions WHERE finding_id=? ORDER BY id", (finding_id,))]

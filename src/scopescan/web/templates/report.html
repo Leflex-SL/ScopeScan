@@ -67,6 +67,8 @@
 </table>
 
 <h2>Resumen</h2>
+{% if observation %}<h2>Procedencia y cobertura</h2><pre>{{ observation|tojson(indent=2) }}</pre>{% endif %}
+{% if delta %}<h2>Cambios frente a la observacion anterior</h2><pre>{{ delta|tojson(indent=2) }}</pre>{% endif %}
 <div class="tiles">
   <div class="tile critical"><div class="v">{{ counts.critical }}</div><div class="l">Criticas</div></div>
   <div class="tile high"><div class="v">{{ counts.high }}</div><div class="l">Altas</div></div>

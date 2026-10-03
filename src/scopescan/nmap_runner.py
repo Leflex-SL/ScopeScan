@@ -11,6 +11,7 @@ donde va un escaneo de 65535 puertos que dura media hora.
 
 from __future__ import annotations
 
+import ipaddress
 import re
 import threading
 from collections.abc import Callable
@@ -61,10 +62,20 @@ def build_argv(
     nmap_path: str | None = None,
     stats_every: str = "5s",
 ) -> list[str]:
+    # ScopeScan executes concrete pinned addresses. Nmap defaults to IPv4;
+    # an IPv6 scope needs -6 and mixed families cannot share a command.
+    try:
+        families = {ipaddress.ip_address(target).version for target in targets}
+    except ValueError:
+        families = set()  # Compatibility for callers that validate target syntax separately.
+    if len(families) > 1:
+        raise ValueError("Nmap requiere separar los objetivos IPv4 e IPv6")
     binary = nmap_path or find_nmap()
     return [
         binary,
         *profile_args,
+        *(["-6"] if families == {6} else []),
+        "-n",
         "--stats-every",
         stats_every,
         "-v",

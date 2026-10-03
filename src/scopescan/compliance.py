@@ -158,10 +158,18 @@ def windows_controls(inventory: dict, open_tcp_ports: set[int]) -> list[dict[str
 
 
 def linux_controls(inventory: dict, open_tcp_ports: set[int]) -> list[dict[str, Any]]:
+    from .authenticated_checks import collected_ssh_port
     controls: list[dict[str, Any]] = []
-    ssh_port = inventory.get("ssh_port", 22)
+    ssh_port = collected_ssh_port(inventory)
     sshd = inventory.get("sshd")
-    if ssh_port not in open_tcp_ports:
+    if ssh_port is None:
+        controls.extend(_control(control_id, title, "unknown", "Falta endpoint SSH de recopilacion")
+                        for control_id, title in (
+                            ("LINUX-SSH-ROOT", "SSH no permite acceso directo de root"),
+                            ("LINUX-SSH-PASSWORD", "SSH no acepta contrasenas"),
+                            ("LINUX-SSH-EMPTY", "SSH rechaza contrasenas vacias"),
+                            ("LINUX-SSH-MAXAUTH", "SSH limita intentos por conexion a 6")))
+    elif ssh_port not in open_tcp_ports:
         controls.extend([
             _control("LINUX-SSH-ROOT", "SSH no permite acceso directo de root",
                      "not_applicable", f"Puerto {ssh_port} cerrado"),

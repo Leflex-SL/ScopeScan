@@ -234,6 +234,8 @@ def _security_updates(raw: str, manager: str) -> list[dict[str, str]]:
 
 
 def parse_inventory(output: str, *, ssh_port: int = 22) -> dict:
+    if type(ssh_port) is not int or not 1 <= ssh_port <= 65535:
+        raise InventoryError("El puerto observado de recopilacion SSH debe estar entre 1 y 65535")
     records = _decode_records(output)
     os_data = _os_release(records.get("OS_RELEASE", ""))
     kernel = records.get("KERNEL", "").strip()
@@ -295,7 +297,7 @@ def parse_inventory(output: str, *, ssh_port: int = 22) -> dict:
 def collect(
     host: str, *, user: str | None = None, port: int = 22, local: bool = False,
 ) -> dict:
-    if not 1 <= port <= 65535:
+    if type(port) is not int or not 1 <= port <= 65535:
         raise InventoryError("El puerto SSH debe estar entre 1 y 65535")
     if user and not SSH_USER.fullmatch(user):
         raise InventoryError("Nombre de usuario SSH invalido")

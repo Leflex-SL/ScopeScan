@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import IntEnum, StrEnum
+from typing import Any
 
 
 class Severity(IntEnum):
@@ -125,6 +126,7 @@ class Host:
     osmatches: list[OSMatch] = field(default_factory=list)
     # Puertos cerrados/filtrados agrupados por nmap en <extraports>.
     extraports: dict[str, int] = field(default_factory=dict)
+    timed_out: bool = False
 
     @property
     def is_up(self) -> bool:
@@ -154,6 +156,8 @@ class NmapRun:
     hosts: list[Host] = field(default_factory=list)
     hosts_up: int = 0
     hosts_total: int = 0
+    coverage: dict[str, Any] = field(default_factory=dict)
+    provenance: dict[str, Any] = field(default_factory=dict)
 
     @property
     def live_hosts(self) -> list[Host]:
@@ -183,6 +187,9 @@ class Finding:
     cve_ids: list[str] = field(default_factory=list)
     confirmed: bool = False  # comprobacion positiva por NSE o inventario autenticado
     assessment: Assessment = Assessment.EXPOSURE
+    # Logical identity excludes presentation text and observed versions.
+    rule_id: str = ""
+    component: str = ""
 
     @property
     def location(self) -> str:

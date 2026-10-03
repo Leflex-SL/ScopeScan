@@ -64,6 +64,7 @@ def render_report(scan_id: int, *, payload: dict | None = None) -> str:
         patch_candidates=payload["windows_patch_candidates"], inventories=payload["inventories"],
         json=json, cves=_cves, scripts=db.row_scripts, hostnames=db.row_list,
         generated=datetime.now().strftime("%d/%m/%Y %H:%M"),  # noqa: DTZ005
+        observation=payload.get("observation", {}), delta=payload.get("delta", {}),
         total_open=sum(len(ports) for _host, ports in hosts),
     )
 

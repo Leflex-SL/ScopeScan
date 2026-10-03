@@ -91,6 +91,8 @@ def verify_scan(
     if row is None:
         raise ValueError(f"No existe el escaneo {scan_id}")
 
+    _require_local_evidence(row)
+
     # --- Guard de alcance --------------------------------------------------
     try:
         target_set = parse_targets(row["targets"], force=True)
@@ -222,6 +224,14 @@ def exploitable_results(scan_id: int) -> list[dict[str, object]]:
     return out
 
 
+def _require_local_evidence(row) -> None:
+    import json
+    context = json.loads(row["execution_context"] or "{}")
+    if row["profile"] == "imported" or context.get("provenance", {}).get("imported"):
+        raise MsfScopeError("Un resultado importado no autoriza acciones Metasploit; "
+                            "crea un alcance autorizado y verifica localmente primero.")
+
+
 def _validated_exploit_context(
     scan_id: int,
     *,
@@ -242,6 +252,8 @@ def _validated_exploit_context(
     row = db.get_scan(scan_id)
     if row is None:
         raise ValueError(f"No existe el escaneo {scan_id}")
+
+    _require_local_evidence(row)
 
     mod = msf_modules.module_by_path(module_path)
     if mod is None or not mod.exploitable:

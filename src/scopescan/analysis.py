@@ -332,7 +332,8 @@ def analyze(run: NmapRun, *, target_is_private: bool = True) -> list[Finding]:
 
     deduped: dict[tuple, Finding] = {}
     for finding in findings:
-        key = (finding.host, finding.port, finding.protocol, finding.title, finding.source)
+        key = (finding.host, finding.port, finding.protocol,
+               finding.rule_id or finding.source, finding.component)
         current = deduped.get(key)
         if current is None or finding.severity > current.severity:
             deduped[key] = finding

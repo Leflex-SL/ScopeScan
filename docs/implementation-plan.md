@@ -26,15 +26,15 @@ Puerta A: suite/regresiones, lint, self-test e instalación; verificación indep
 
 ## B. Evaluación continua
 
-- [ ] B01 Identidad estable de activos con alias y observaciones históricas, identificadores de reglas/hallazgos independientes del título.
-- [ ] B02 Deltas de hosts/puertos/servicios/hallazgos y cobertura compatible; ausencias no evaluadas no se cierran como resueltas.
-- [ ] B03 Estado vigente por activo separado del histórico y contadores sin duplicar reescaneos.
-- [ ] B04 Flujo de remediación: responsable, estado, vencimiento, excepción con caducidad y evidencia de cierre; historial de acciones.
-- [ ] B05 Riesgo explicable por activo: gravedad/evidencia/exposición, KEV/EPSS y criticidad configurada.
-- [ ] B06 Alcances guardados con objetivos, exclusiones, resolución de nombres, perfil y autorización; preview por motor.
-- [ ] B07 Reescaneo de verificación dirigido a endpoints/controles afectados, sin resolver por falta de cobertura.
-- [ ] B08 Importación Nmap XML y resultados externos con procedencia/cobertura explícita.
-- [ ] B09 Panel y CLI para todas estas operaciones; búsqueda, filtros y documentación de uso.
+- [x] B01 Identidad estable de activos con alias y observaciones históricas, identificadores de reglas/hallazgos independientes del título.
+- [x] B02 Deltas de hosts/puertos/servicios/hallazgos y cobertura compatible; ausencias no evaluadas no se cierran como resueltas.
+- [x] B03 Estado vigente por activo separado del histórico y contadores sin duplicar reescaneos.
+- [x] B04 Flujo de remediación: responsable, estado, vencimiento, excepción con caducidad y evidencia de cierre; historial de acciones.
+- [x] B05 Riesgo explicable por activo: gravedad/evidencia/exposición, KEV/EPSS y criticidad configurada.
+- [x] B06 Alcances guardados con objetivos, exclusiones, resolución de nombres, perfil y autorización; preview por motor.
+- [x] B07 Reescaneo de verificación dirigido a endpoints/controles afectados, sin resolver por falta de cobertura.
+- [x] B08 Importación Nmap XML y resultados externos con procedencia/cobertura explícita.
+- [x] B09 Panel y CLI para todas estas operaciones; búsqueda, filtros y documentación de uso.
 
 Puerta B: escenarios completos alta→reescaneo→corrección→cierre y cobertura distinta→no evaluado, migración histórica, panel renderizado y contratos CLI/API.
 
@@ -68,4 +68,6 @@ Trivy se presentó como alternativa a Syft/Grype y se mantiene como formato de i
 
 ## Estado de ejecución
 
-Fase A verificada localmente el 2026-10-03: 278 pruebas pasan, Ruff, self-test, pip check, construcción e instalación aislada de rueda y verificación del sdist. Evidencia y límites en `phase-a-verification.md`. B, C y D siguen pendientes; la matriz remota Linux/Python 3.11 no se ha ejecutado en esta sesión.
+Fase A verificada localmente el 2026-10-03: 278 pruebas pasan, Ruff, self-test, pip check, construcción e instalación aislada de rueda y verificación del sdist. Evidencia y límites en `phase-a-verification.md`.
+
+Fase B completada y aceptada el 2026-10-03: 439 pruebas pasan, Ruff, self-test, pip check, build e instalación aislada final; el sdist recoge 439 pruebas y supera 10 casos de distribución. Verificación independiente, revisión fresca y escenarios de ciclo de remediación/cobertura registrados en `phase-b-verification.md`. C y D siguen pendientes; la matriz remota Linux/Python 3.11 no se ha ejecutado en esta sesión.

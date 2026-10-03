@@ -4,6 +4,8 @@
 {% block content %}
 <h1>{{ scan.name }}</h1>
 <p class="lead mono">{{ scan.targets }} &middot; perfil {{ scan.profile }}</p>
+<p><a href="/scans/{{ scan.id }}/delta">Cambios y cobertura de esta observacion</a> · <a href="/current-findings">Estado vigente por activo</a></p>
+{% if observation %}<details class="card"><summary>Procedencia y cobertura (vista previa)</summary><pre>{{ preview_evidence(observation)|tojson(indent=2) }}</pre><a href="/scans/{{ scan.id }}/export.json">Descargar evidencia completa</a></details>{% endif %}
 
 <div class="card">
   <div class="actions" style="justify-content:space-between">
@@ -15,7 +17,7 @@
       {% if scan.status in ('running', 'queued') %}
       <form method="post" action="/scans/{{ scan.id }}/cancel"><input type="hidden" name="csrf_token" value="{{ request.state.csrf_token }}"><button class="danger">Cancelar</button></form>
       {% else %}
-      <form method="post" action="/scans/{{ scan.id }}/rerun"><input type="hidden" name="csrf_token" value="{{ request.state.csrf_token }}"><button>Repetir</button></form>
+      {% if scan.profile != 'imported' %}<form method="post" action="/scans/{{ scan.id }}/rerun"><input type="hidden" name="csrf_token" value="{{ request.state.csrf_token }}"><button>Repetir</button></form>{% else %}<a class="btn" href="/scopes">Crear alcance para verificar</a>{% endif %}
       <a class="btn" href="/scans/{{ scan.id }}/report" target="_blank">Informe</a>
       <a class="btn" href="/scans/{{ scan.id }}/export.json">JSON</a>
       <a class="btn" href="/scans/{{ scan.id }}/findings.csv">CSV</a>

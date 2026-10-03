@@ -50,6 +50,10 @@ header.top .brand {
 }
 header.top .brand span { color: var(--accent); }
 header.top nav { display: flex; gap: 18px; }
+header.top nav { flex-wrap: wrap; }
+header.top { flex-wrap: wrap; }
+details > summary { cursor: pointer; color: var(--accent); }
+td details pre { max-width: 520px; overflow: auto; }
 header.top nav a { color: var(--text-dim); }
 header.top nav a.active, header.top nav a:hover { color: var(--text); }
 header.top .spacer { flex: 1; }

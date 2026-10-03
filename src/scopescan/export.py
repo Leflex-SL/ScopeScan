@@ -103,6 +103,8 @@ def _scan_payload(scan_id: int) -> dict[str, Any]:
     payload = {
         "schema_version": SCHEMA_VERSION,
         "scan": exportable_row(scan),
+        "observation": _loads(scan["execution_context"], {}),
+        "delta": db.scan_delta(scan_id),
         "summary": {
             "severity_counts": db.severity_counts(scan_id),
             "hosts": scan["hosts_total"],

@@ -114,8 +114,10 @@ def enrich_candidates(rows: list[dict]) -> tuple[list[dict], list[str]]:
     cve_ids = {row["cve_id"] for row in rows}
     try:
         kev = kev_catalog()
+        kev_assessed = True
     except ThreatIntelError as exc:
         kev = {}
+        kev_assessed = False
         errors.append(f"CISA KEV: {exc}")
     try:
         epss = epss_scores(cve_ids)
@@ -128,6 +130,7 @@ def enrich_candidates(rows: list[dict]) -> tuple[list[dict], list[str]]:
         row.update(
             epss=score.get("epss"), epss_percentile=score.get("percentile"),
             epss_date=score.get("date", ""), known_exploited=bool(known),
+            kev_assessed=kev_assessed, kev_checked_at=db.now() if kev_assessed else None,
             kev_due_date=known.get("due_date", ""), kev_action=known.get("action", ""),
         )
     return rows, errors

@@ -219,7 +219,7 @@ def _print_summary(scan_id: int) -> None:
 
 def cmd_list(args: argparse.Namespace) -> int:
     db.init_db()
-    rows = db.list_scans(limit=args.limit)
+    rows = db.list_scans(limit=args.limit, offset=args.offset, search=args.search)
     if not rows:
         print("No hay escaneos registrados.")
         return 0
@@ -516,6 +516,8 @@ def build_parser() -> argparse.ArgumentParser:
         description="Escaner de puertos y vulnerabilidades sobre nmap, con panel web.",
     )
     sub = parser.add_subparsers(dest="command", required=True)
+    from .continuous_cli import register
+    register(sub)
 
     p_scan = sub.add_parser("scan", help="Escanear uno o varios objetivos")
     p_scan.add_argument("targets", nargs="+", help="IP, CIDR, rango o nombre de host")
@@ -540,6 +542,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_list = sub.add_parser("list", help="Listar escaneos guardados")
     p_list.add_argument("-l", "--limit", type=int, default=30)
+    p_list.add_argument("--search", default="")
+    p_list.add_argument("--offset", type=int, default=0)
     p_list.set_defaults(func=cmd_list)
 
     p_show = sub.add_parser("show", help="Mostrar el resultado de un escaneo")

@@ -73,6 +73,12 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="ScopeScan", lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
 
+from .continuity import preview_evidence
+from .continuity import router as continuity_router
+
+app.include_router(continuity_router)
+templates.env.globals["preview_evidence"] = preview_evidence
+
 
 _UNSAFE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
 
@@ -332,6 +338,7 @@ def scan_detail(request: Request, scan_id: int, min_severity: int = 0):
         "scan_detail.html",
         {
             "scan": scan,
+            "observation": json.loads(scan["execution_context"] or "{}"),
             "hosts": db.hosts_with_ports(scan_id),
             "findings": db.get_findings(scan_id, min_severity=min_severity),
             "candidates": db.get_cve_candidates(scan_id),
@@ -401,7 +408,10 @@ def cancel_scan(scan_id: int):
 
 @app.post("/scans/{scan_id}/rerun")
 def rerun_scan(scan_id: int):
-    new_id = rerun(scan_id)
+    try:
+        new_id = rerun(scan_id)
+    except (ValueError, InvalidTarget, KeyError) as exc:
+        raise HTTPException(400, detail=str(exc)) from exc
     QUEUE.submit(new_id)
     return RedirectResponse(f"/scans/{new_id}", status_code=303)
 

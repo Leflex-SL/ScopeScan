@@ -180,12 +180,18 @@ def windows_findings(
     return findings
 
 
+def collected_ssh_port(inventory: dict) -> int | None:
+    """Legacy inventories without explicit collection endpoint establish no SSH binding."""
+    value = inventory.get("ssh_port")
+    return value if type(value) is int and 1 <= value <= 65535 else None
+
+
 def linux_findings(host: str, inventory: dict, open_tcp_ports: set[int]) -> list[Finding]:
     """Convierte valores efectivos observados en hallazgos Linux confirmados."""
     findings: list[Finding] = []
     sshd = inventory.get("sshd")
-    ssh_port = inventory.get("ssh_port", 22)
-    if isinstance(sshd, dict) and ssh_port in open_tcp_ports:
+    ssh_port = collected_ssh_port(inventory)
+    if isinstance(sshd, dict) and ssh_port is not None and ssh_port in open_tcp_ports:
         if sshd.get("permit_root_login") == "yes":
             findings.append(Finding(
                 title="SSH permite acceso directo de root",

@@ -13,6 +13,11 @@ presenta todo en un panel web con informe exportable.
 
 ## Qué hace, exactamente
 
+La evaluacion continua añade activos estables, alias, deltas conservadores de
+cobertura, remediacion con evidencia, riesgo explicable, alcances guardados,
+verificacion dirigida e importacion Nmap/externa. Todas estas operaciones estan
+disponibles en el panel y la CLI: [guia de uso](docs/continuous-assessment.md).
+
 | Fase | Quién la hace | Resultado |
 |---|---|---|
 | Validación del objetivo | `targets.py` | IP, CIDR, rango o host; recuento de hosts; aviso si es público |

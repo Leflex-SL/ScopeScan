@@ -113,6 +113,12 @@ def execute(scan_id: int, *, cancel: threading.Event | None = None) -> None:
 
     try:
         context = json.loads(row["execution_context"] or "{}")
+        if context.get("engine_plan"):
+            from .engine_service import decode_plan
+            from .engine_service import execute as execute_engine
+
+            execute_engine(decode_plan(context["engine_plan"]),scan_id=scan_id,cancel=cancel)
+            return
         if context.get("authenticated"):
             from .verification import execute_authenticated
             execute_authenticated(scan_id, context, cancel=cancel)
@@ -220,6 +226,8 @@ def rerun(scan_id: int) -> int:
     if row["profile"] == "imported":
         raise ValueError("Un resultado importado no es una orden ejecutable; crea un alcance")
     context = json.loads(row["execution_context"] or "{}")
+    if context.get("engine_plan"):
+        raise ValueError("Para repetir un motor, revisa su alcance vigente en /engines antes de ejecutar")
     if context.get("provenance", {}).get("imported"):
         raise ValueError("Un resultado importado no es una orden ejecutable; crea un alcance")
     if any(key in context for key in ("verification", "authenticated", "verification_of")):

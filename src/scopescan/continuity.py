@@ -172,6 +172,16 @@ def covered(previous: dict, coverage: dict, host: dict | None, finding: dict | N
         return False
     if finding:
         source = finding["source"]
+        if source.startswith("engine:") and (not previous.get("evidence_version") or previous.get("evidence_version") != coverage.get("evidence_version")):
+            return False
+        engine_condition = None
+        if source.startswith("engine:"):
+            engine_condition = finding.get("component", "").rpartition("::endpoint-v1:")[2]
+            if not engine_condition or not any(endpoint.get("host") == (last_host or host["address"])
+                and endpoint.get("port") == port and endpoint.get("protocol") == protocol
+                and endpoint.get("source") == source and endpoint.get("condition") == engine_condition
+                for endpoint in previous.get("endpoints", [])):
+                return False
         if source.startswith("auth:"):
             if source.startswith("auth:linux:ssh-"):
                 endpoint = coverage.get("control_endpoints", {}).get(source, {})
@@ -181,10 +191,11 @@ def covered(previous: dict, coverage: dict, host: dict | None, finding: dict | N
             return (source in coverage.get("rules", [])
                     and coverage.get("controls", {}).get(source) == "pass"
                     and bool(coverage.get("control_evidence", {}).get(source)))
-        if source.startswith("nse:"):
+        if source.startswith(("nse:", "engine:")):
             if not any(negative.get("host") == (last_host or host["address"])
                        and negative.get("port") == port and negative.get("protocol") == protocol
                        and negative.get("source") == source and negative.get("evidence", "").strip()
+                       and (engine_condition is None or negative.get("condition") == engine_condition)
                        for negative in coverage.get("negative_evidence", [])):
                 return False
         elif finding["rule_id"] not in coverage.get("rules", []) and source not in coverage.get("rules", []):
@@ -220,6 +231,7 @@ def normal_host(host) -> dict:
     for port in value["ports"]:
         service = port.pop("service")
         port.update({"service_name": service["name"], "product": service["product"], "version": service["version"]})
+        port["tunnel"] = service.get("tunnel", "")
         port["address"] = host.address
     return value
 
@@ -239,7 +251,14 @@ def merge_snapshot(previous: dict, host: dict, coverage: dict, scan_id: int) -> 
                 if not value.get(field) and old_port.get(field):
                     value[field] = old_port[field]
         merged[key] = value
-    return dict(host, coverage=coverage, ports=list(merged.values()))
+    result = dict(host, coverage=coverage, ports=list(merged.values()))
+    if coverage.get("engine") != "nmap" and previous:
+        if result.get("state") == "unknown":
+            result["state"] = previous.get("state", "unknown")
+        for field in ("hostnames", "osmatches", "mac", "vendor"):
+            if not result.get(field) and previous.get(field):
+                result[field] = previous[field]
+    return result
 
 
 def persist(conn, scan_id: int, hosts: list, findings: list, coverage: dict,

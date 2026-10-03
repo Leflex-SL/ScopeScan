@@ -40,12 +40,12 @@ Puerta B: escenarios completos alta→reescaneo→corrección→cierre y cobertu
 
 ## C. Precisión y motores
 
-- [ ] C01 Contratos ScanScope, EngineAdapter, Observation, Finding y Job con resultados/versiones/procedencia normalizados.
-- [ ] C02 Adaptador Nuclei con plantillas revisadas/fijadas, verificación de integridad, planificación por servicio y límites/timeout/cancelación comunes; sin protocolos innecesarios de ejecución local.
-- [ ] C03 Evaluación Linux por avisos/paquetes de distribución y versiones completas/backports; integración/importación Vuls documentada y probada.
-- [ ] C04 TLS especializado con SNI/hostname/cadena/confianza, adaptador SSLyze y resultados estructurados.
-- [ ] C05 Presupuesto NVD compartido entre jobs, deduplicación de solicitudes, backoff/reintentos y caché vencida explícita; CVSS/proveedor y cobertura MSRC explicados.
-- [ ] C06 Persistencia de versiones de motores/reglas/templates/feeds y raw junto al resultado normalizado; consolidación de evidencia con límites de attack paths claros.
+- [x] C01 Contratos ScanScope, EngineAdapter, Observation, Finding y Job con resultados/versiones/procedencia normalizados.
+- [x] C02 Adaptador Nuclei con plantillas revisadas/fijadas, verificación de integridad, planificación por servicio y límites/timeout/cancelación comunes; sin protocolos innecesarios de ejecución local.
+- [x] C03 Evaluación Linux por avisos/paquetes de distribución y versiones completas/backports; integración/importación Vuls documentada y probada.
+- [x] C04 TLS especializado con SNI/hostname/cadena/confianza, adaptador SSLyze y resultados estructurados.
+- [x] C05 Presupuesto NVD compartido entre jobs, deduplicación de solicitudes, backoff/reintentos y caché vencida explícita; CVSS/proveedor y cobertura MSRC explicados.
+- [x] C06 Persistencia de versiones de motores/reglas/templates/feeds y raw junto al resultado normalizado; consolidación de evidencia con límites de attack paths claros.
 
 Puerta C: fixtures oficiales/versionados, procesos de motor simulados con protocolo real, fallos parciales/cancelación/límites/alcance, y documentación de herramientas externas.
 
@@ -70,4 +70,6 @@ Trivy se presentó como alternativa a Syft/Grype y se mantiene como formato de i
 
 Fase A verificada localmente el 2026-10-03: 278 pruebas pasan, Ruff, self-test, pip check, construcción e instalación aislada de rueda y verificación del sdist. Evidencia y límites en `phase-a-verification.md`.
 
-Fase B completada y aceptada el 2026-10-03: 439 pruebas pasan, Ruff, self-test, pip check, build e instalación aislada final; el sdist recoge 439 pruebas y supera 10 casos de distribución. Verificación independiente, revisión fresca y escenarios de ciclo de remediación/cobertura registrados en `phase-b-verification.md`. C y D siguen pendientes; la matriz remota Linux/Python 3.11 no se ha ejecutado en esta sesión.
+Fase B completada y aceptada el 2026-10-03: 439 pruebas pasan, Ruff, self-test, pip check, build e instalación aislada final; el sdist recoge 439 pruebas y supera 10 casos de distribución. Verificación independiente, revisión fresca y escenarios de ciclo de remediación/cobertura registrados en `phase-b-verification.md`.
+
+Fase C completada y aceptada: 610 pruebas integrales pasan tras las reparaciones finales, Ruff, pip check y seis comprobaciones de self-test en instalación aislada. La rueda conserva exactamente 63 archivos Python/HTML/CSS/YAML; el sdist recoge 610 pruebas y supera 14 casos de distribución. Contratos reales simulados, migración desde B, dos procesos compartiendo presupuesto NVD, cobertura Host/SNI y revisiones independientes registrados en `phase-c-verification.md`. D01–D08 siguen pendientes; la matriz remota Linux/Python 3.11 no se ha ejecutado en esta sesión.

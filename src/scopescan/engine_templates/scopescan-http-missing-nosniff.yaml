@@ -1,0 +1,19 @@
+# Copyright (c) 2026 ScopeScan contributors. SPDX-License-Identifier: MIT
+id: scopescan-http-missing-nosniff
+info:
+  name: HTTP response lacks X-Content-Type-Options
+  author: ScopeScan
+  severity: low
+  description: Observed response header hardening; not a CVE or exploit check.
+http:
+  - method: GET
+    path:
+      - "{{BaseURL}}/"
+    redirects: false
+    matchers:
+      - type: word
+        part: header
+        words:
+          - "x-content-type-options:"
+        case-insensitive: true
+        negative: true

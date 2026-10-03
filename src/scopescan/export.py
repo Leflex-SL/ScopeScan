@@ -140,6 +140,13 @@ def _scan_payload(scan_id: int) -> dict[str, Any]:
             for kind, row in db.get_enrichment_statuses(scan_id).items()
         },
     }
+    from .engine_store import get_result, list_results
+
+    engines, _ = list_results(scan_id=scan_id, limit=100)
+    payload["engine_results"] = [get_result(item["id"], include_raw=True) for item in engines]
+    payload["evidence_limits"] = {"engine_result_limit": 100, "attack_paths": "Heuristic correlations; neither exploitation proof nor an exhaustive attack graph."}
+    for candidate in payload["cve_candidates"]:
+        candidate["cvss_metrics"] = _loads(candidate.get("cvss_metrics"),[])
     return payload
 
 

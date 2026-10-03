@@ -297,6 +297,9 @@ def connect(path: Path | None = None) -> Iterator[sqlite3.Connection]:
 def init_db(path: Path | None = None) -> None:
     with connect(path) as conn:
         conn.executescript(SCHEMA)
+        from .engine_store import migrate as migrate_engines
+
+        migrate_engines(conn)
         scan_columns = {row["name"] for row in conn.execute("PRAGMA table_info(scans)")}
         if "deletion_pending" not in scan_columns:
             conn.execute("ALTER TABLE scans ADD COLUMN deletion_pending INTEGER NOT NULL DEFAULT 0")
@@ -899,6 +902,9 @@ def replace_cve_candidates(scan_id: int, rows: list[dict[str, Any]]) -> None:
         )
         for row in rows:
             conn.execute("UPDATE cve_candidates SET kev_assessed=?,kev_checked_at=? WHERE scan_id=? AND host=? AND port=? AND protocol=? AND queried_cpe=? AND cve_id=?", (int(row["kev_assessed"]) if row.get("kev_assessed") is not None else None, row.get("kev_checked_at"), scan_id, row["host"], row["port"], row["protocol"], row["queried_cpe"], row["cve_id"]))
+            conn.execute("UPDATE cve_candidates SET cvss_version=?,cvss_metrics=?,feed_fetched_at=?,feed_stale=?,feed_error=?,feed_schema=? WHERE scan_id=? AND host=? AND port=? AND protocol=? AND queried_cpe=? AND cve_id=?",
+                (row.get("cvss_version"),json.dumps(row.get("cvss_metrics",[])),row.get("feed_fetched_at"),int(row["feed_stale"]) if row.get("feed_stale") is not None else None,row.get("feed_error"),row.get("feed_schema"),scan_id,row["host"],row["port"],row["protocol"],row["queried_cpe"],row["cve_id"]))
+            conn.execute("UPDATE cve_candidates SET feed_provider=? WHERE scan_id=? AND host=? AND port=? AND protocol=? AND queried_cpe=? AND cve_id=?",(row.get("feed_provider"),scan_id,row["host"],row["port"],row["protocol"],row["queried_cpe"],row["cve_id"]))
         from .continuity import sync_enrichment
 
         sync_enrichment(conn, scan_id)
@@ -1143,6 +1149,8 @@ def replace_windows_patch_assessment(
             "UPDATE scans SET risk_score = ? WHERE id = ?",
             (risk_score_evidence(risk_evidence), scan_id),
         )
+        conn.execute("UPDATE windows_patch_status SET provider=?,api_version=?,schema_version=?,coverage_description=? WHERE scan_id=? AND host=?",
+            (status.get("provider"),status.get("api_version"),status.get("schema_version"),status.get("coverage_description"),scan_id,host))
         from .continuity import sync_enrichment
 
         sync_enrichment(conn, scan_id, host)
@@ -1367,7 +1375,7 @@ def _asset_item(conn, row, *, detail: bool = False) -> dict:
 def _asset_ports(conn, asset_id: str, *, limit: int, offset: int) -> tuple[list[dict], int]:
     query = " FROM assets a,json_each(a.latest_snapshot,'$.ports') p WHERE a.id=?"
     total = conn.execute("SELECT COUNT(*)" + query, (asset_id,)).fetchone()[0]
-    fields = ("address", "portid", "protocol", "state", "service_name", "product", "version", "current_assessment", "network_scan_id")
+    fields = ("address", "portid", "protocol", "state", "service_name", "product", "version", "tunnel", "current_assessment", "network_scan_id")
     columns = ",".join("substr(json_extract(p.value,'$." + field + "'),1,256) AS " + field if field not in {"portid", "network_scan_id"} else "json_extract(p.value,'$." + field + "') AS " + field for field in fields)
     rows = conn.execute("SELECT " + columns + query + " ORDER BY p.key LIMIT ? OFFSET ?", (asset_id, min(max(1, limit), 100), max(0, offset)))
     return [dict(r) for r in rows], total

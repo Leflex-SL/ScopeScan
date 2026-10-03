@@ -300,6 +300,10 @@ def cmd_enrich(args: argparse.Namespace) -> int:
         return 1
     print(f"{count} coincidencias candidatas de NVD en el escaneo #{args.scan_id}.")
     print("Una coincidencia CPE no confirma vulnerabilidad ni parche pendiente.")
+    status = db.get_enrichment_statuses(args.scan_id).get("nvd")
+    if status is not None and status["status"] in {"partial", "failed", "cancelled"}:
+        print(f"Cobertura NVD {status['status']}: {status['error'] or 'cache vencida o proveedor no disponible'}",file=sys.stderr)
+        return 1
     return 0
 
 
@@ -518,6 +522,8 @@ def build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command", required=True)
     from .continuous_cli import register
     register(sub)
+    from .engine_cli import register as register_engines
+    register_engines(sub)
 
     p_scan = sub.add_parser("scan", help="Escanear uno o varios objetivos")
     p_scan.add_argument("targets", nargs="+", help="IP, CIDR, rango o nombre de host")

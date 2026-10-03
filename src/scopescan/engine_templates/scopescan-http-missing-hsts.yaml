@@ -1,0 +1,19 @@
+# Copyright (c) 2026 ScopeScan contributors. SPDX-License-Identifier: MIT
+id: scopescan-http-missing-hsts
+info:
+  name: HTTPS response lacks Strict-Transport-Security
+  author: ScopeScan
+  severity: low
+  description: Observed HTTPS response header hardening; not a CVE or exploit check.
+http:
+  - method: GET
+    path:
+      - "{{BaseURL}}/"
+    redirects: false
+    matchers:
+      - type: word
+        part: header
+        words:
+          - "strict-transport-security:"
+        case-insensitive: true
+        negative: true

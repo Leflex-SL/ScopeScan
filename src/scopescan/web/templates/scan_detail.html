@@ -17,7 +17,7 @@
       {% if scan.status in ('running', 'queued') %}
       <form method="post" action="/scans/{{ scan.id }}/cancel"><input type="hidden" name="csrf_token" value="{{ request.state.csrf_token }}"><button class="danger">Cancelar</button></form>
       {% else %}
-      {% if scan.profile != 'imported' %}<form method="post" action="/scans/{{ scan.id }}/rerun"><input type="hidden" name="csrf_token" value="{{ request.state.csrf_token }}"><button>Repetir</button></form>{% else %}<a class="btn" href="/scopes">Crear alcance para verificar</a>{% endif %}
+      {% if scan.profile in ['nuclei','sslyze','vuls','linux-advisories'] %}<a class="btn" href="/engines">Revisar alcance del motor</a>{% elif scan.profile != 'imported' %}<form method="post" action="/scans/{{ scan.id }}/rerun"><input type="hidden" name="csrf_token" value="{{ request.state.csrf_token }}"><button>Repetir</button></form>{% else %}<a class="btn" href="/scopes">Crear alcance para verificar</a>{% endif %}
       <a class="btn" href="/scans/{{ scan.id }}/report" target="_blank">Informe</a>
       <a class="btn" href="/scans/{{ scan.id }}/export.json">JSON</a>
       <a class="btn" href="/scans/{{ scan.id }}/findings.csv">CSV</a>
@@ -189,7 +189,7 @@
   <tr>
     <td><span class="assessment candidate">Posible afectacion</span></td>
     <td><a href="https://nvd.nist.gov/vuln/detail/{{ candidate.cve_id }}" target="_blank" rel="noopener">{{ candidate.cve_id }}</a><br><span class="small muted">{{ candidate.summary[:160] }}</span></td>
-    <td>CVSS {{ candidate.cvss if candidate.cvss is not none else '-' }}{% if candidate.cvss_source %}<br><span class="small muted">{{ candidate.cvss_source }}</span>{% endif %}
+    <td>CVSS {{ candidate.cvss if candidate.cvss is not none else '-' }}{% if candidate.cvss_source %}<br><span class="small muted">{{ candidate.cvss_source }} · {{ candidate.cvss_version or 'versión no declarada' }}</span>{% endif %}{% if candidate.feed_stale %}<br><strong>Caché vencida</strong>{% endif %}{% if candidate.feed_fetched_at %}<br><span class="small muted">Feed {{ candidate.feed_fetched_at }} · {{ candidate.feed_schema or 'schema no declarado' }}</span>{% endif %}{% if candidate.feed_error %}<br><span class="small">{{ candidate.feed_error }}</span>{% endif %}
       {% if candidate.known_exploited %}<br><strong>Explotada según CISA KEV</strong>{% endif %}
       {% if candidate.epss is not none %}<br>EPSS {{ '%.2f'|format(candidate.epss * 100) }}% <span class="small muted">(percentil {{ '%.1f'|format(candidate.epss_percentile * 100) }})</span>{% endif %}</td>
     <td class="mono small">{{ candidate.host }}:{{ candidate.port }}/{{ candidate.protocol }}</td>
@@ -309,6 +309,7 @@
 {% if patch_statuses %}
 {% for patch in patch_statuses %}
 <div class="card"><p><strong class="mono">{{ patch.host }}</strong> · {{ patch.product_name }}</p>
+<p class="small muted">{{ patch.provider or 'Microsoft MSRC' }} · API {{ patch.api_version or 'no declarada' }} · {{ patch.coverage_description or 'Cobertura limitada al boletín mensual seleccionado; no representa todo el historial de vulnerabilidades Windows.' }}</p>
 <p class="small">Build instalado <strong>{{ patch.installed_build }}</strong>; requerido por {{ patch.release_id }}: <strong>{{ patch.required_build }}</strong>{% if patch.required_kb %} (KB{{ patch.required_kb }}){% endif %}.
 Estado: <span class="status {{ 'done' if patch.status == 'current' else 'failed' if patch.status == 'outdated' else 'cancelled' }}">{{ {'current':'vigente','outdated':'desactualizado','partial':'parcial'}[patch.status] }}</span>{% if patch.unresolved %}; {{ patch.unresolved }} entradas sin build evaluable{% endif %}.</p></div>
 {% endfor %}

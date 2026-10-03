@@ -77,6 +77,9 @@ from .continuity import preview_evidence
 from .continuity import router as continuity_router
 
 app.include_router(continuity_router)
+from .engines import router as engines_router
+
+app.include_router(engines_router)
 templates.env.globals["preview_evidence"] = preview_evidence
 
 
@@ -522,7 +525,9 @@ def _run_nvd(scan_id: int, include_firmware: bool) -> None:
     except Exception as exc:  # noqa: BLE001 - el error debe quedar visible tras responder
         db.set_enrichment_status(scan_id, "nvd", "failed", str(exc))
     else:
-        db.set_enrichment_status(scan_id, "nvd", "done")
+        statuses = db.get_enrichment_statuses(scan_id)
+        if statuses.get("nvd") is None or statuses["nvd"]["status"] not in {"partial", "failed", "cancelled"}:
+            db.set_enrichment_status(scan_id, "nvd", "done")
 
 
 @app.post("/scans/{scan_id}/enrich/nvd")

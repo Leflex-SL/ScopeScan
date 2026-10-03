@@ -40,10 +40,13 @@ packages=''
 packages_checked='no'
 if command -v dpkg-query >/dev/null 2>&1; then
     manager='dpkg'
-    packages="$(dpkg-query -W -f='${binary:Package}\t${Version}\n' 2>/dev/null)" && packages_checked='yes'
+    packages="$(dpkg-query -W -f='${binary:Package}\t${Version}\t${Architecture}\t${source:Package}\t${source:Version}\t${db:Status-Status}\n' 2>/dev/null)" && {
+        packages_checked='yes'
+        packages="$(printf '%s\n' "$packages" | awk -F '\t' '$6=="installed" { printf "%s\t%s\t%s\t%s\t%s\n",$1,$2,$3,$4,$5 }')"
+    }
 elif command -v rpm >/dev/null 2>&1; then
     manager='rpm'
-    packages="$(rpm -qa --qf '%{NAME}\t%{VERSION}-%{RELEASE}\n' 2>/dev/null)" && packages_checked='yes'
+    packages="$(rpm -qa --qf '%{NAME}\t%{EPOCHNUM}:%{VERSION}-%{RELEASE}\t%{ARCH}\t%{VENDOR}\n' 2>/dev/null)" && packages_checked='yes'
 elif command -v apk >/dev/null 2>&1; then
     manager='apk'
     # Installed APK metadata keeps the full version (including -rN) separate.
@@ -190,7 +193,8 @@ def _packages(raw: str, manager: str) -> list[dict[str, str]]:
     rows: list[dict[str, str]] = []
     for line in raw.splitlines()[:5000]:
         if manager in {"dpkg", "rpm", "apk"} and "\t" in line:
-            name, version = line.split("\t", 1)
+            fields = line.split("\t")
+            name, version = fields[:2]
         elif manager == "apk" and "-" in line:
             # APK versions start with a number and may include suffixes and
             # revision; a package name itself may contain hyphens/digits.
@@ -201,7 +205,16 @@ def _packages(raw: str, manager: str) -> list[dict[str, str]]:
         else:
             continue
         if name and version:
-            rows.append({"name": name[:300], "version": version[:300]})
+            row = {"name": name[:300], "version": version[:300]}
+            if manager in {"rpm", "dpkg"} and "\t" in line and len(fields) > 2:
+                row["arch"] = fields[2][:100]
+                if len(fields) > 3:
+                    row["source_name" if manager == "dpkg" else "vendor"] = fields[3][:300]
+                if manager == "dpkg" and len(fields) > 4:
+                    row["source_version"] = fields[4][:300]
+                # Vendor/source fields do not prove the installed repository origin.
+                row["repository_class"] = "unknown"
+            rows.append(row)
     return rows
 
 
@@ -209,7 +222,7 @@ def _sshd_setting(raw: str, name: str) -> str | None:
     prefix = name.lower() + " "
     for line in raw.splitlines():
         if line.lower().startswith(prefix):
-            return line[len(prefix):].strip().lower() or None
+            return line[len(prefix) :].strip().lower() or None
     return None
 
 
@@ -222,14 +235,22 @@ def _security_updates(raw: str, manager: str) -> list[dict[str, str]]:
         if manager == "dpkg":
             match = re.match(r"Inst\s+(\S+)\s+(?:\[([^\]]+)\]\s+)?\((\S+)", line)
             if match:
-                updates.append({"name": match.group(1), "installed": match.group(2) or "",
-                                "candidate": match.group(3), "advisory": "security repository"})
+                updates.append(
+                    {
+                        "name": match.group(1),
+                        "installed": match.group(2) or "",
+                        "candidate": match.group(3),
+                        "advisory": "security repository",
+                    }
+                )
         elif manager == "rpm" and not line.lower().startswith(("last metadata", "update id")):
             parts = line.split()
-            if len(parts) >= 3 and any(token.lower().startswith(("rhsa-", "elsa-", "al"))
-                                       for token in parts):
-                updates.append({"name": parts[-1], "installed": "", "candidate": "",
-                                "advisory": parts[0]})
+            if len(parts) >= 3 and any(
+                token.lower().startswith(("rhsa-", "elsa-", "al")) for token in parts
+            ):
+                updates.append(
+                    {"name": parts[-1], "installed": "", "candidate": "", "advisory": parts[0]}
+                )
     return updates
 
 
@@ -268,7 +289,8 @@ def parse_inventory(output: str, *, ssh_port: int = 22) -> dict:
         "packages_unparsed": packages_unparsed,
         "packages_complete": (
             package_checked == "yes" and not packages_truncated and not packages_unparsed
-            if package_checked and package_total is not None else None
+            if package_checked and package_total is not None
+            else None
         ),
         "security_updates_checked": records.get("SECURITY_UPDATES_CHECKED") == "yes",
         "security_updates": _security_updates(records.get("SECURITY_UPDATES", ""), manager),
@@ -278,7 +300,9 @@ def parse_inventory(output: str, *, ssh_port: int = 22) -> dict:
             "password_authentication": _sshd_setting(sshd, "passwordauthentication"),
             "permit_empty_passwords": _sshd_setting(sshd, "permitemptypasswords"),
             "max_auth_tries": _sshd_setting(sshd, "maxauthtries"),
-        } if sshd else None,
+        }
+        if sshd
+        else None,
         "firewall": {
             "observed": observed,
             "active": records.get("FIREWALL_ACTIVE") == "yes" if observed else None,
@@ -289,13 +313,18 @@ def parse_inventory(output: str, *, ssh_port: int = 22) -> dict:
         "apparmor": records.get("APPARMOR", "").strip().lower() or None,
         "reboot_required": (
             records["REBOOT_REQUIRED"] == "yes"
-            if records.get("REBOOT_REQUIRED") in {"yes", "no"} else None
+            if records.get("REBOOT_REQUIRED") in {"yes", "no"}
+            else None
         ),
     }
 
 
 def collect(
-    host: str, *, user: str | None = None, port: int = 22, local: bool = False,
+    host: str,
+    *,
+    user: str | None = None,
+    port: int = 22,
+    local: bool = False,
 ) -> dict:
     if type(port) is not int or not 1 <= port <= 65535:
         raise InventoryError("El puerto SSH debe estar entre 1 y 65535")
@@ -310,8 +339,15 @@ def collect(
         if not ssh:
             raise InventoryError("No se encontro el cliente OpenSSH (ssh)")
         argv = [
-            ssh, "-o", "BatchMode=yes", "-o", "PasswordAuthentication=no",
-            "-o", "ConnectTimeout=12", "-p", str(port),
+            ssh,
+            "-o",
+            "BatchMode=yes",
+            "-o",
+            "PasswordAuthentication=no",
+            "-o",
+            "ConnectTimeout=12",
+            "-p",
+            str(port),
         ]
         if user:
             argv.extend(["-l", user])
@@ -319,24 +355,38 @@ def collect(
     kwargs = {"creationflags": subprocess.CREATE_NO_WINDOW} if sys.platform == "win32" else {}
     try:
         result = subprocess.run(
-            argv, input=SCRIPT.encode("utf-8"), capture_output=True,
-            timeout=180, check=False, **kwargs,
+            argv,
+            input=SCRIPT.encode("utf-8"),
+            capture_output=True,
+            timeout=180,
+            check=False,
+            **kwargs,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise InventoryError(f"No se pudo ejecutar el inventario Linux: {exc}") from exc
     if result.returncode:
-        stderr = result.stderr.decode("utf-8", "replace") if isinstance(result.stderr, bytes) \
+        stderr = (
+            result.stderr.decode("utf-8", "replace")
+            if isinstance(result.stderr, bytes)
             else result.stderr
+        )
         detail = (stderr or "fallo de autenticacion SSH").splitlines()[0][:300]
         raise InventoryError(f"Fallo el inventario de {host}: {detail}")
-    stdout = result.stdout.decode("utf-8", "replace") if isinstance(result.stdout, bytes) \
+    stdout = (
+        result.stdout.decode("utf-8", "replace")
+        if isinstance(result.stdout, bytes)
         else result.stdout
+    )
     return parse_inventory(stdout, ssh_port=port)
 
 
 def inventory_scan(
-    scan_id: int, *, host: str | None = None, user: str | None = None,
-    port: int = 22, local: bool = False,
+    scan_id: int,
+    *,
+    host: str | None = None,
+    user: str | None = None,
+    port: int = 22,
+    local: bool = False,
 ) -> int:
     """Consulta por SSH solo hosts vivos pertenecientes al escaneo autorizado."""
     if db.get_scan(scan_id) is None:
@@ -355,9 +405,7 @@ def inventory_scan(
         if not is_loopback:
             raise ValueError("El modo local solo puede asociarse a un host loopback")
     ports_by_host = {
-        found_host["address"]: {
-            item["portid"] for item in ports if item["protocol"] == "tcp"
-        }
+        found_host["address"]: {item["portid"] for item in ports if item["protocol"] == "tcp"}
         for found_host, ports in db.hosts_with_ports(scan_id)
     }
     for target in targets:
@@ -365,7 +413,11 @@ def inventory_scan(
         findings = linux_findings(target, data, ports_by_host.get(target, set()))
         controls = linux_controls(data, ports_by_host.get(target, set()))
         db.save_host_inventory(
-            scan_id, target, data, "shell-local" if local else "openssh",
-            findings=findings, controls=controls,
+            scan_id,
+            target,
+            data,
+            "shell-local" if local else "openssh",
+            findings=findings,
+            controls=controls,
         )
     return len(targets)

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import calendar
 import json
+import math
 import re
 from datetime import UTC, datetime, timedelta
 from urllib.error import HTTPError, URLError
@@ -21,10 +22,13 @@ class MsrcError(RuntimeError):
 
 
 def _fetch_json(url: str, *, limit: int = 80_000_000) -> dict:
-    request = Request(url, headers={
-        "Accept": "application/json",
-        "User-Agent": "ScopeScan/0.2 Windows patch assessment",
-    })
+    request = Request(
+        url,
+        headers={
+            "Accept": "application/json",
+            "User-Agent": "ScopeScan/0.2 Windows patch assessment",
+        },
+    )
     try:
         with urlopen(request, timeout=60) as response:
             payload = response.read(limit + 1)
@@ -55,8 +59,12 @@ def _release_for(moment: datetime) -> str:
 
 
 def _previous_month(moment: datetime) -> datetime:
-    return datetime(moment.year - (moment.month == 1), 12 if moment.month == 1 else moment.month - 1,
-                    1, tzinfo=UTC)
+    return datetime(
+        moment.year - (moment.month == 1),
+        12 if moment.month == 1 else moment.month - 1,
+        1,
+        tzinfo=UTC,
+    )
 
 
 def _product_map(tree: object) -> dict[str, str]:
@@ -95,8 +103,11 @@ def match_product(inventory: dict, products: dict[str, str]) -> tuple[str, str]:
     if "server" in os_name.lower():
         year = next((item for item in ("2025", "2022", "2019", "2016") if item in os_name), "")
         if year:
-            suffix = " (Server Core installation)" \
-                if str(inventory.get("installation_type") or "").lower() == "server core" else ""
+            suffix = (
+                " (Server Core installation)"
+                if str(inventory.get("installation_type") or "").lower() == "server core"
+                else ""
+            )
             candidates.append(f"Windows Server {year}{suffix}")
     elif display:
         family = "Windows 11" if build >= 22000 else "Windows 10"
@@ -127,41 +138,68 @@ def _catalog(document: dict, product_id: str) -> tuple[list[dict], int]:
         if not affected:
             continue
         remediations = [
-            item for item in vulnerability.get("Remediations") or []
-            if isinstance(item, dict) and item.get("Type") == 2
-            and product_id in (item.get("ProductID") or []) and item.get("FixedBuild")
+            item
+            for item in vulnerability.get("Remediations") or []
+            if isinstance(item, dict)
+            and item.get("Type") == 2
+            and product_id in (item.get("ProductID") or [])
+            and item.get("FixedBuild")
         ]
         if not remediations:
             unresolved += 1
             continue
         scores = [
-            item for item in vulnerability.get("CVSSScoreSets") or []
-            if isinstance(item, dict) and product_id in (item.get("ProductID") or [])
+            item
+            for item in vulnerability.get("CVSSScoreSets") or []
+            if isinstance(item, dict)
+            and product_id in (item.get("ProductID") or [])
+            and _valid_score(item.get("BaseScore"))
         ]
         score = max(scores, key=lambda item: float(item.get("BaseScore") or 0), default={})
         remediation = max(remediations, key=lambda item: _version(str(item["FixedBuild"])))
-        rows.append({
-            "cve_id": str(vulnerability.get("CVE") or ""),
-            "title": str((vulnerability.get("Title") or {}).get("Value") or ""),
-            "cvss": float(score["BaseScore"]) if score.get("BaseScore") is not None else None,
-            "cvss_vector": str(score.get("Vector") or ""),
-            "kb": str((remediation.get("Description") or {}).get("Value") or ""),
-            "fixed_build": str(remediation["FixedBuild"]),
-            "url": str(remediation.get("URL") or ""),
-        })
+        rows.append(
+            {
+                "cve_id": str(vulnerability.get("CVE") or ""),
+                "title": str((vulnerability.get("Title") or {}).get("Value") or ""),
+                "cvss": float(score["BaseScore"]) if score.get("BaseScore") is not None else None,
+                "cvss_vector": str(score.get("Vector") or ""),
+                "kb": str((remediation.get("Description") or {}).get("Value") or ""),
+                "fixed_build": str(remediation["FixedBuild"]),
+                "url": str(remediation.get("URL") or ""),
+                "cvss_source": "Microsoft MSRC",
+                "cvss_version": str(score.get("Vector") or "").split("/")[0].removeprefix("CVSS:"),
+            }
+        )
     return rows, unresolved
 
 
+def _valid_score(value):
+    try:
+        return (
+            value is not None
+            and not isinstance(value, bool)
+            and math.isfinite(float(value))
+            and 0 <= float(value) <= 10
+        )
+    except (ValueError, TypeError):
+        return False
+
+
 def assess_inventory(
-    inventory: dict, *, release_id: str | None = None, fetch_json=_fetch_json,
+    inventory: dict,
+    *,
+    release_id: str | None = None,
+    fetch_json=_fetch_json,
 ) -> tuple[dict, list[dict]]:
     # os_version suele incluir una revision ficticia .0; el build real es Build.UBR.
     installed = f"10.0.{inventory.get('os_build')}.{inventory.get('ubr')}"
     if inventory.get("ubr") is None or not inventory.get("os_build"):
         raise MsrcError("El inventario no contiene build y UBR de Windows")
-    releases = [release_id] if release_id else [
-        _release_for(datetime.now(UTC)), _release_for(_previous_month(datetime.now(UTC)))
-    ]
+    releases = (
+        [release_id]
+        if release_id
+        else [_release_for(datetime.now(UTC)), _release_for(_previous_month(datetime.now(UTC)))]
+    )
     last_error: MsrcError | None = None
     document: dict | None = None
     chosen = ""
@@ -200,17 +238,34 @@ def assess_inventory(
         db.put_feed_cache(cache_key, {"rows": catalog, "unresolved": unresolved})
     if not catalog:
         raise MsrcError(f"MSRC no publico builds corregidos para {product_name} en {chosen}")
-    relevant = [row for row in catalog if _version(row["fixed_build"])[0:3] == _version(installed)[0:3]]
+    relevant = [
+        row for row in catalog if _version(row["fixed_build"])[0:3] == _version(installed)[0:3]
+    ]
     if not relevant:
         raise MsrcError("Los builds corregidos de MSRC no coinciden con la rama instalada")
     latest = max(relevant, key=lambda row: _version(row["fixed_build"]))
-    missing = [dict(row, installed_build=installed) for row in relevant
-               if _version(installed) < _version(row["fixed_build"])]
+    missing = [
+        dict(row, installed_build=installed)
+        for row in relevant
+        if _version(installed) < _version(row["fixed_build"])
+    ]
     status_name = "outdated" if missing else "partial" if unresolved else "current"
     status = {
-        "release_id": chosen, "product_id": product_id, "product_name": product_name,
-        "installed_build": installed, "required_build": latest["fixed_build"],
-        "required_kb": latest["kb"], "status": status_name, "unresolved": unresolved,
+        "release_id": chosen,
+        "product_id": product_id,
+        "product_name": product_name,
+        "installed_build": installed,
+        "required_build": latest["fixed_build"],
+        "required_kb": latest["kb"],
+        "status": status_name,
+        "unresolved": unresolved,
+        "provider": "Microsoft MSRC",
+        "api_version": API_VERSION,
+        "coverage": "monthly_bulletin",
+        "coverage_release": chosen,
+        "coverage_note": "Boletin mensual seleccionado; no cubre todo el historial de CVEs Windows",
+        "schema_version": "CVRF-3.0",
+        "coverage_description": f"Boletin mensual {chosen}; no cubre todo el historial de CVEs Windows",
     }
     return status, missing
 
@@ -219,8 +274,11 @@ def assess_scan(scan_id: int, *, release_id: str | None = None) -> int:
     if db.get_scan(scan_id) is None:
         raise ValueError(f"No existe el escaneo {scan_id}")
     inventories = db.get_host_inventories(scan_id)
-    windows = [(host, data) for host, data in inventories.items()
-               if data.get("platform", "windows") == "windows"]
+    windows = [
+        (host, data)
+        for host, data in inventories.items()
+        if data.get("platform", "windows") == "windows"
+    ]
     if not windows:
         raise MsrcError("El escaneo no tiene inventario Windows autenticado")
     db.set_enrichment_status(scan_id, "msrc", "running")
@@ -235,8 +293,12 @@ def assess_scan(scan_id: int, *, release_id: str | None = None) -> int:
         db.replace_windows_patch_assessment(scan_id, host, status, missing)
         total += len(missing)
     if errors:
-        db.set_enrichment_status(scan_id, "msrc", "partial" if len(errors) < len(windows) else "failed",
-                                 "; ".join(errors))
+        db.set_enrichment_status(
+            scan_id,
+            "msrc",
+            "partial" if len(errors) < len(windows) else "failed",
+            "; ".join(errors),
+        )
         if len(errors) == len(windows):
             raise MsrcError("; ".join(errors))
     else:

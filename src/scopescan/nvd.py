@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 import time
@@ -12,6 +13,16 @@ from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
 from . import db
+from .feed_budget import (
+    FeedInterrupted,
+    SharedFeedBudget,
+    check_interrupt,
+    claim_refresh,
+    interruptible_wait,
+    last_refresh,
+    record_refresh,
+    release_refresh,
+)
 
 API_URL = "https://services.nvd.nist.gov/rest/json/cves/2.0"
 CACHE_TTL = timedelta(days=7)
@@ -23,6 +34,10 @@ MATCH_ORDER = {"exact": 0, "range": 1, "all_versions": 2, "unresolved": 3}
 
 class NvdError(RuntimeError):
     """No se pudo obtener un resultado completo y fiable de NVD."""
+
+
+class NvdCancelled(NvdError):
+    """Cancellation/deadline is never converted into stale success."""
 
 
 def normalize_cpe(raw: str) -> str | None:
@@ -115,7 +130,9 @@ def _criteria_match(query: str, match: dict) -> str | None:
     return "all_versions" if expected_version == "*" else "exact"
 
 
-def _matching_paths(node: dict, query: str, conditional: bool = False) -> list[tuple[str, bool, str]]:
+def _matching_paths(
+    node: dict, query: str, conditional: bool = False
+) -> list[tuple[str, bool, str]]:
     if node.get("negate") is True:
         return []
     children = node.get("nodes") or []
@@ -132,6 +149,8 @@ def _matching_paths(node: dict, query: str, conditional: bool = False) -> list[t
 
 
 def _applicability(cve: dict, query: str) -> tuple[str, bool, str]:
+    if not cve.get("configurations"):
+        return "unresolved", False, ""
     paths = [
         path
         for configuration in cve.get("configurations") or []
@@ -158,6 +177,7 @@ def match_note(match_type: str, requires_other_cpe: bool) -> str:
 
 def _extract(item: dict, query: str) -> dict | None:
     cve = item.get("cve", {})
+    _validate_cve(cve)
     cve_id = cve.get("id", "")
     if not CVE_ID.fullmatch(cve_id) or cve.get("vulnStatus") == "Rejected":
         return None
@@ -165,98 +185,328 @@ def _extract(item: dict, query: str) -> dict | None:
     score = None
     source = ""
     vector = ""
-    for key in ("cvssMetricV31", "cvssMetricV30", "cvssMetricV40"):
+    all_metrics = []
+    selected_version = ""
+    for key, version in (
+        ("cvssMetricV40", "4.0"),
+        ("cvssMetricV31", "3.1"),
+        ("cvssMetricV30", "3.0"),
+        ("cvssMetricV2", "2.0"),
+    ):
         entries = metrics.get(key) or []
-        if entries:
-            preferred = next((x for x in entries if x.get("type") == "Primary"), entries[0])
+        valid = []
+        for entry in entries:
+            value = entry.get("cvssData", {}).get("baseScore")
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or not math.isfinite(value)
+                or not 0 <= value <= 10
+            ):
+                continue
+            normalized = {
+                "version": version,
+                "source": entry.get("source", ""),
+                "type": entry.get("type", ""),
+                "score": value,
+                "vector": entry.get("cvssData", {}).get("vectorString", ""),
+            }
+            all_metrics.append(normalized)
+            valid.append(entry)
+        if valid and score is None:
+            preferred = next((x for x in valid if x.get("type") == "Primary"), valid[0])
             cvss_data = preferred.get("cvssData", {})
             score = cvss_data.get("baseScore")
             source = preferred.get("source", "")
             vector = cvss_data.get("vectorString", "")
-            break
+            selected_version = version
     descriptions = cve.get("descriptions") or []
     description = next((d.get("value", "") for d in descriptions if d.get("lang") == "es"), "")
     if not description:
         description = next((d.get("value", "") for d in descriptions if d.get("lang") == "en"), "")
     match_type, requires_other_cpe, criteria = _applicability(cve, query)
     advisory = next(
-        (reference["url"] for reference in cve.get("references") or []
-         if reference.get("url", "").startswith("https://")
-         and "Vendor Advisory" in reference.get("tags", [])),
+        (
+            reference["url"]
+            for reference in cve.get("references") or []
+            if reference.get("url", "").startswith("https://")
+            and "Vendor Advisory" in reference.get("tags", [])
+        ),
         "",
     )
     return {
-        "cve_id": cve_id, "cvss": score, "summary": description[:500],
-        "match_type": match_type, "requires_other_cpe": requires_other_cpe,
-        "matched_criteria": criteria, "cvss_source": source,
-        "cvss_vector": vector, "vendor_advisory": advisory,
+        "cve_id": cve_id,
+        "cvss": score,
+        "summary": description[:500],
+        "match_type": match_type,
+        "requires_other_cpe": requires_other_cpe,
+        "matched_criteria": criteria,
+        "cvss_source": source,
+        "cvss_vector": vector,
+        "vendor_advisory": advisory,
+        "cvss_version": selected_version,
+        "cvss_metrics": all_metrics,
+        "cvss_policy": "highest-version-primary-first",
     }
 
 
+def _validate_cve(cve):
+    if not isinstance(cve, dict) or not isinstance(cve.get("id", ""), str):
+        raise NvdError("Registro CVE NVD invalido")
+    metrics = cve.get("metrics", {})
+    if not isinstance(metrics, dict):
+        raise NvdError("Metricas CVSS NVD invalidas")
+    for entries in metrics.values():
+        if not isinstance(entries, list) or len(entries) > 100:
+            raise NvdError("Metricas CVSS NVD invalidas")
+        for entry in entries:
+            if not isinstance(entry, dict) or not isinstance(entry.get("cvssData", {}), dict):
+                raise NvdError("Metrica CVSS NVD invalida")
+            if not all(
+                isinstance(entry.get(key, ""), str) for key in ("source", "type")
+            ) or not isinstance(entry.get("cvssData", {}).get("vectorString", ""), str):
+                raise NvdError("Proveedor/vector CVSS NVD invalido")
+    for key in ("descriptions", "references", "configurations"):
+        if not isinstance(cve.get(key, []), list):
+            raise NvdError("Coleccion NVD invalida")
+    for description in cve.get("descriptions", []):
+        if not isinstance(description, dict) or not all(
+            isinstance(description.get(key, ""), str) for key in ("lang", "value")
+        ):
+            raise NvdError("Descripcion NVD invalida")
+    for reference in cve.get("references", []):
+        if (
+            not isinstance(reference, dict)
+            or not isinstance(reference.get("url", ""), str)
+            or not isinstance(reference.get("tags", []), list)
+        ):
+            raise NvdError("Referencia NVD invalida")
+
+    def node(value, depth=0):
+        if depth > 32 or not isinstance(value, dict):
+            raise NvdError("Configuracion NVD invalida")
+        children, matches = value.get("nodes", []), value.get("cpeMatch", [])
+        if not isinstance(children, list) or not isinstance(matches, list):
+            raise NvdError("Configuracion NVD invalida")
+        for match in matches:
+            if (
+                not isinstance(match, dict)
+                or not isinstance(match.get("criteria", ""), str)
+                or not all(
+                    isinstance(match.get(key, ""), str)
+                    for key in (
+                        "versionStartIncluding",
+                        "versionStartExcluding",
+                        "versionEndIncluding",
+                        "versionEndExcluding",
+                    )
+                )
+            ):
+                raise NvdError("Criterio NVD invalido")
+        for child in children:
+            node(child, depth + 1)
+
+    for configuration in cve.get("configurations", []):
+        node(configuration)
+
+
 class NvdClient:
-    def __init__(self, *, api_key: str | None = None):
+    """Conservative shared quota, refresh lease and explicit stale cache metadata."""
+
+    def __init__(
+        self,
+        *,
+        api_key: str | None = None,
+        cancel=None,
+        deadline=None,
+        timeout=120.0,
+        budget=None,
+        transport=None,
+    ):
         self.api_key = api_key if api_key is not None else os.environ.get("NVD_API_KEY", "")
-        self._last_request = 0.0
+        self.cancel = cancel
+        self.deadline = deadline
+        self.timeout = timeout
+        self.budget = budget or SharedFeedBudget()
+        self.transport = transport or urlopen
+        self.last_status = {}
+        self._query_deadline = None
+
+    def _check(self):
+        check_interrupt(self.cancel, self._query_deadline)
 
     def _page(self, cpe: str, start: int) -> dict:
-        interval = 0.7 if self.api_key else 6.1
-        remaining = interval - (time.monotonic() - self._last_request)
-        if self._last_request and remaining > 0:
-            time.sleep(remaining)
-        query = urlencode({
-            "cpeName": cpe, "isVulnerable": "", "resultsPerPage": 2000,
-            "startIndex": start,
-        })
+        query = urlencode(
+            {"cpeName": cpe, "isVulnerable": "", "resultsPerPage": 2000, "startIndex": start}
+        )
         headers = {"User-Agent": "ScopeScan/0.2 (CPE candidate enrichment)"}
         if self.api_key:
             headers["apiKey"] = self.api_key
         request = Request(f"{API_URL}?{query}", headers=headers)
-        self._last_request = time.monotonic()
-        try:
-            with urlopen(request, timeout=20) as response:
-                payload = response.read(16_000_001)
-        except (HTTPError, URLError, TimeoutError, OSError) as exc:
-            raise NvdError(f"NVD no disponible: {exc}") from exc
+        for attempt in range(3):
+            self.budget.reserve(cancel=self.cancel, deadline=self._query_deadline)
+            self._check()
+            remaining = self._query_deadline - time.monotonic()
+            try:
+                with self.transport(request, timeout=min(20.0, remaining)) as response:
+                    payload = response.read(16_000_001)
+                self._check()
+                break
+            except HTTPError as exc:
+                if exc.code not in (429, 500, 502, 503, 504):
+                    raise NvdError(f"NVD devolvio HTTP {exc.code}") from None
+                retry = exc.headers.get("Retry-After", "") if exc.headers else ""
+                try:
+                    delay = float(retry)
+                except ValueError:
+                    from email.utils import parsedate_to_datetime
+
+                    try:
+                        delay = (parsedate_to_datetime(retry) - datetime.now(UTC)).total_seconds()
+                    except (TypeError, ValueError, OverflowError):
+                        delay = 2.0**attempt
+                self.budget.defer(delay if math.isfinite(delay) else 2.0**attempt)
+                if attempt == 2:
+                    raise NvdError(f"NVD devolvio HTTP {exc.code}") from None
+            except (URLError, TimeoutError, OSError):
+                if attempt == 2:
+                    raise NvdError("NVD no disponible tras tres intentos") from None
+                self.budget.defer(2.0**attempt)
         if len(payload) > 16_000_000:
             raise NvdError("Respuesta de NVD demasiado grande")
         try:
             data = json.loads(payload)
-        except (ValueError, UnicodeDecodeError) as exc:
-            raise NvdError("Respuesta JSON de NVD no valida") from exc
+        except (ValueError, UnicodeDecodeError, RecursionError):
+            raise NvdError("Respuesta JSON de NVD no valida") from None
         if not isinstance(data, dict) or not isinstance(data.get("vulnerabilities"), list):
             raise NvdError("Respuesta de NVD incompleta")
         return data
 
-    def candidates(self, cpe: str) -> list[dict]:
+    def _cached(self, cpe):
         cache = db.get_nvd_cache(cpe)
-        if cache:
+        if not cache:
+            return None
+        try:
             fetched = datetime.fromisoformat(cache["fetched_at"])
-            if datetime.now(UTC) - fetched < CACHE_TTL:
-                cached = json.loads(cache["candidates"])
-                if all("match_type" in item for item in cached):
-                    return cached
-        output: dict[str, dict] = {}
-        start = 0
-        while True:
-            data = self._page(cpe, start)
-            items = data["vulnerabilities"]
-            for item in items:
-                candidate = _extract(item, cpe)
-                if candidate and candidate["match_type"] != "not_applicable":
-                    output[candidate["cve_id"]] = candidate
-            start += len(items)
-            total = data.get("totalResults", 0)
-            if start >= total:
-                break
-            if not items or start > 10_000:
-                raise NvdError("Paginacion incompleta de NVD")
-        candidates = list(output.values())
-        db.put_nvd_cache(cpe, candidates)
-        return candidates
+            if fetched.tzinfo is None:
+                return None
+            rows = json.loads(cache["candidates"])
+            if not isinstance(rows, list) or not all(
+                isinstance(x, dict) and "match_type" in x for x in rows
+            ):
+                return None
+        except (ValueError, TypeError):
+            return None
+        return cache, rows, datetime.now(UTC) - fetched >= CACHE_TTL
+
+    def _decorate(self, cpe, rows, fetched_at, *, stale=False, error=""):
+        status = {
+            "feed_provider": "NVD",
+            "feed_schema": "2.2.4",
+            "feed_fetched_at": fetched_at,
+            "feed_stale": stale,
+            "feed_error": error,
+        }
+        self.last_status[cpe] = status
+        return [dict(row, **status) for row in rows]
+
+    def candidates(self, cpe: str) -> list[dict]:
+        if normalize_cpe(cpe) != cpe or not _is_exact_version(cpe):
+            raise NvdError("La consulta NVD requiere CPE 2.3 y version concreta")
+        self._query_deadline = min(self.deadline or float("inf"), time.monotonic() + self.timeout)
+        key = "nvd:" + cpe
+        owner = None
+        try:
+            while owner is None:
+                self._check()
+                cached = self._cached(cpe)
+                if cached and not cached[2]:
+                    return self._decorate(cpe, cached[1], cached[0]["fetched_at"])
+                refresh = last_refresh(key)
+                if refresh and refresh["error"] and time.time() - refresh["attempted_at"] < 30:
+                    if cached:
+                        return self._decorate(
+                            cpe,
+                            cached[1],
+                            cached[0]["fetched_at"],
+                            stale=True,
+                            error=refresh["error"],
+                        )
+                    raise NvdError(refresh["error"])
+                owner = claim_refresh(key, ttl=max(180.0, self.timeout + 30.0))
+                if owner is None:
+                    interruptible_wait(0.1, cancel=self.cancel, deadline=self._query_deadline)
+            # Another worker can finish between our first cache read and lease acquisition.
+            cached = self._cached(cpe)
+            if cached and not cached[2]:
+                return self._decorate(cpe, cached[1], cached[0]["fetched_at"])
+            output = {}
+            start = 0
+            expected_total = None
+            for _ in range(6):
+                self._check()
+                data = self._page(cpe, start)
+                items = data["vulnerabilities"]
+                total = data.get("totalResults")
+                if (
+                    type(total) is not int
+                    or not 0 <= total <= 10000
+                    or len(items) > 2000
+                    or start + len(items) > total
+                ):
+                    raise NvdError("Limite o total de paginacion NVD invalido")
+                if expected_total is not None and total != expected_total:
+                    raise NvdError("El total NVD cambio durante la paginacion")
+                expected_total = total
+                if "startIndex" in data and (type(data["startIndex"]) is not int or data["startIndex"] != start):
+                    raise NvdError("NVD devolvio una pagina fuera de secuencia")
+                if "resultsPerPage" in data and (type(data["resultsPerPage"]) is not int or not 0 <= data["resultsPerPage"] <= 2000 or len(items) > data["resultsPerPage"]):
+                    raise NvdError("Tamano declarado de pagina NVD invalido")
+                for item in items:
+                    if not isinstance(item, dict) or not isinstance(item.get("cve"), dict):
+                        raise NvdError("Registro NVD invalido")
+                    candidate = _extract(item, cpe)
+                    if candidate and candidate["match_type"] != "not_applicable":
+                        output[candidate["cve_id"]] = candidate
+                start += len(items)
+                if start >= total:
+                    break
+                if not items:
+                    raise NvdError("Paginacion incompleta de NVD")
+            else:
+                raise NvdError("Demasiadas paginas NVD")
+            self._check()
+            db.put_nvd_cache(cpe, list(output.values()))
+            record_refresh(key)
+            cached = self._cached(cpe)
+            return self._decorate(cpe, list(output.values()), cached[0]["fetched_at"])
+        except FeedInterrupted as exc:
+            raise NvdCancelled(str(exc)) from None
+        except NvdError as exc:
+            if owner:
+                record_refresh(key, str(exc))
+            cached = self._cached(cpe)
+            if cached:
+                return self._decorate(
+                    cpe, cached[1], cached[0]["fetched_at"], stale=True, error=str(exc)
+                )
+            self.last_status[cpe] = {
+                "feed_provider": "NVD",
+                "feed_stale": True,
+                "feed_fetched_at": None,
+                "feed_error": str(exc),
+            }
+            raise
+        finally:
+            if owner:
+                release_refresh(key, owner)
 
 
 def enrich_scan(
-    scan_id: int, *, client: NvdClient | None = None, include_firmware: bool = False,
+    scan_id: int,
+    *,
+    client: NvdClient | None = None,
+    include_firmware: bool = False,
     intel_enricher=None,
 ) -> int:
     """Consulta CPE exactos; el firmware autenticado exige una elección explícita."""
@@ -265,6 +515,8 @@ def enrich_scan(
     client = client or NvdClient()
     inventories = db.get_host_inventories(scan_id)
     rows: list[dict] = []
+    queried: dict[str, list[dict]] = {}
+    query_errors: list[str] = []
     for host, ports in db.hosts_with_ports(scan_id):
         if host["state"] != "up":
             continue
@@ -279,26 +531,59 @@ def enrich_scan(
                         continue
                     pairs.append((raw, cpe))
             firmware = inventories.get(host["address"], {}).get("intel_me_firmware")
-            if include_firmware and firmware and SAFE_PART.fullmatch(firmware) and any(
-                "active_management_technology" in cpe for cpe in detected
+            if (
+                include_firmware
+                and firmware
+                and SAFE_PART.fullmatch(firmware)
+                and any("active_management_technology" in cpe for cpe in detected)
             ):
-                pairs.append((
-                    f"WMI Intel ME_System.FWVersion={firmware}",
-                    f"cpe:2.3:o:intel:active_management_technology_firmware:{firmware}:*:*:*:*:*:*:*",
-                ))
+                pairs.append(
+                    (
+                        f"WMI Intel ME_System.FWVersion={firmware}",
+                        f"cpe:2.3:o:intel:active_management_technology_firmware:{firmware}:*:*:*:*:*:*:*",
+                    )
+                )
             for evidence, cpe in pairs:
-                for candidate in client.candidates(cpe):
-                    rows.append({
-                        "host": host["address"], "port": port["portid"],
-                        "protocol": port["protocol"], "detected_cpe": evidence,
-                        "queried_cpe": cpe, **candidate,
-                    })
+                if cpe not in queried:
+                    try:
+                        queried[cpe] = client.candidates(cpe)
+                    except NvdCancelled:
+                        raise
+                    except NvdError as exc:
+                        query_errors.append(str(exc))
+                        queried[cpe] = []
+                for candidate in queried[cpe]:
+                    rows.append(
+                        {
+                            "host": host["address"],
+                            "port": port["portid"],
+                            "protocol": port["protocol"],
+                            "detected_cpe": evidence,
+                            "queried_cpe": cpe,
+                            **candidate,
+                        }
+                    )
     from . import threat_intel
 
     rows, intel_errors = (intel_enricher or threat_intel.enrich_candidates)(rows)
+    feed_errors = query_errors + list(
+        dict.fromkeys(
+            status.get("feed_error", "")
+            for status in getattr(client, "last_status", {}).values()
+            if status.get("feed_stale") or status.get("feed_error")
+        )
+    )
+    db.set_enrichment_status(
+        scan_id,
+        "nvd",
+        "partial" if feed_errors else "done",
+        "; ".join(dict.fromkeys(feed_errors)) or ("Cache NVD vencida" if feed_errors else ""),
+    )
     db.replace_cve_candidates(scan_id, rows)
     db.set_enrichment_status(
-        scan_id, "threat_intel", "partial" if intel_errors else "done",
+        scan_id,
+        "threat_intel",
+        "partial" if intel_errors else "done",
         "; ".join(intel_errors),
     )
     return len(rows)

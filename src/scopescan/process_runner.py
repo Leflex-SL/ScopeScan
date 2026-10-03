@@ -7,12 +7,14 @@ import json
 import os
 import queue
 import signal
+import stat
 import subprocess
 import sys
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from pathlib import Path
 
 MAX_OUTPUT_CHARS = 2 * 1024 * 1024
 MAX_LINE_CHARS = 16384
@@ -98,6 +100,9 @@ class ProcessResult:
     cancelled: bool = False
     timed_out: bool = False
     output_truncated: bool = False
+    file_limit_exceeded: bool = False
+    file_limit_path: str = ""
+    file_limit_reason: str = ""
 
 
 def _terminate_tree(proc: subprocess.Popen) -> None:
@@ -130,16 +135,54 @@ def run_process(
     argv: list[str], *, cancel: threading.Event | None = None,
     timeout: float | None = None, on_line: Callable[[str], None] | None = None,
     max_output_chars: int = MAX_OUTPUT_CHARS,
+    env: Mapping[str, str] | None = None, cwd: str | Path | None = None,
+    file_limits: Mapping[str | Path, int] | None = None,
+    deadline: float | None = None,
 ) -> ProcessResult:
     if timeout is not None and timeout <= 0:
         raise ValueError("Timeout must be positive")
     if max_output_chars <= 0:
         raise ValueError("Output limit must be positive")
+    import math
+
+    if deadline is not None and not math.isfinite(deadline):
+        raise ValueError("Deadline must be finite")
+    if timeout is not None and not math.isfinite(timeout):
+        raise ValueError("Timeout must be finite")
+    started = time.monotonic()
+    if timeout is not None:
+        relative_deadline = started + timeout
+        deadline = min(deadline, relative_deadline) if deadline is not None else relative_deadline
+    monitored = []
+    for path, limit in (file_limits or {}).items():
+        if type(limit) is not int or limit <= 0:
+            raise ValueError("File output limit must be a positive integer")
+        monitored.append((Path(path).absolute(), limit))
+
+    def file_limit_check() -> tuple[str, str]:
+        for path, limit in monitored:
+            try:
+                info = path.lstat()
+            except FileNotFoundError:
+                continue
+            if not stat.S_ISREG(info.st_mode):
+                return str(path), "Output file is not a regular file"
+            if info.st_size > limit:
+                return str(path), "Output file exceeded byte limit"
+        return "", ""
+
     if cancel is not None and cancel.is_set():
         return ProcessResult(-1, "", "", cancelled=True)
+    if deadline is not None and started >= deadline:
+        return ProcessResult(-1, "", "", timed_out=True)
+    exceeded_path, exceeded_reason = file_limit_check()
+    if exceeded_path:
+        return ProcessResult(-1, "", "", file_limit_exceeded=True,
+                             file_limit_path=exceeded_path, file_limit_reason=exceeded_reason)
     options = {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP} if os.name == "nt" else {
         "start_new_session": True
     }
+    options.update(env=dict(env) if env is not None else None, cwd=cwd)
     job = None
     if os.name == "nt":
         proc = subprocess.Popen([sys.executable, "-c", WINDOWS_LAUNCHER],
@@ -182,7 +225,6 @@ def run_process(
                for channel, stream in (("stdout", proc.stdout), ("stderr", proc.stderr))]
     for thread in readers:
         thread.start()
-    deadline = time.monotonic() + timeout if timeout is not None else None
     decoders = {name: codecs.getincrementaldecoder("utf-8")("replace")
                 for name in ("stdout", "stderr")}
     output = {"stdout": "", "stderr": ""}
@@ -197,6 +239,10 @@ def run_process(
                 break
             if deadline is not None and time.monotonic() >= deadline:
                 timed_out = True
+                _terminate_tree(proc)
+                break
+            exceeded_path, exceeded_reason = file_limit_check()
+            if exceeded_path:
                 _terminate_tree(proc)
                 break
             try:
@@ -220,6 +266,10 @@ def run_process(
         if pending_line and on_line is not None and not (cancelled or timed_out):
             on_line(pending_line.rstrip())
         proc.wait(timeout=5)
+        if not exceeded_path:
+            exceeded_path, exceeded_reason = file_limit_check()
+            if exceeded_path:
+                _terminate_tree(proc)
     except BaseException:
         _terminate_tree(proc)
         raise
@@ -232,4 +282,5 @@ def run_process(
         if proc.poll() is None:
             _terminate_tree(proc)
     return ProcessResult(proc.returncode, output["stdout"].rstrip(), output["stderr"].rstrip(),
-                         cancelled, timed_out, truncated)
+                         cancelled, timed_out, truncated, bool(exceeded_path),
+                         exceeded_path, exceeded_reason)

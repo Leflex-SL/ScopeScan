@@ -30,7 +30,7 @@ build-backend = "setuptools.build_meta"
 where = ["src"]
 
 [tool.setuptools.package-data]
-scopescan = ["web/templates/*.html", "web/static/*"]
+scopescan = ["web/templates/*.html", "web/static/*", "engine_templates/*.yaml"]
 
 [tool.ruff]
 line-length = 100

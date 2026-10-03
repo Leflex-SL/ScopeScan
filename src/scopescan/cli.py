@@ -158,7 +158,9 @@ def cmd_scan(args: argparse.Namespace) -> int:
 
     scan_id = service.queue_scan(request)
     print(f"\nEscaneo #{scan_id} lanzado. Esto puede tardar.\n")
-    service.execute(scan_id)
+    from .jobs import QUEUE
+    from .worker import execute_now
+    execute_now(QUEUE.submit(scan_id))
 
     row = db.get_scan(scan_id)
     if row is None:
@@ -291,10 +293,21 @@ def cmd_export(args: argparse.Namespace) -> int:
     return 0
 
 
+def _run_enrichment(scan_id, kind, **options):
+    from .jobs import enqueue_enrichment
+    from .worker import execute_now
+    if db.get_scan(scan_id) is None:
+        raise ValueError(f"No existe el escaneo {scan_id}")
+    job_id = enqueue_enrichment(scan_id,kind,options)
+    if job_id is None:
+        raise ValueError("An enrichment of this kind is already queued or running")
+    return execute_now(job_id).get("count", 0)
+
+
 def cmd_enrich(args: argparse.Namespace) -> int:
     db.init_db()
     try:
-        count = nvd.enrich_scan(args.scan_id, include_firmware=args.include_firmware)
+        count = _run_enrichment(args.scan_id, "nvd", include_firmware=args.include_firmware)
     except (ValueError, nvd.NvdError) as exc:
         print(f"Error NVD: {exc}", file=sys.stderr)
         return 1
@@ -310,7 +323,7 @@ def cmd_enrich(args: argparse.Namespace) -> int:
 def cmd_exploitdb(args: argparse.Namespace) -> int:
     db.init_db()
     try:
-        count = exploitdb.enrich_scan(args.scan_id)
+        count = _run_enrichment(args.scan_id, exploitdb.ENRICH_KIND)
     except SearchSploitNotFound as exc:
         print(f"Error Exploit-DB: {exc}", file=sys.stderr)
         return 1
@@ -325,8 +338,8 @@ def cmd_exploitdb(args: argparse.Namespace) -> int:
 def cmd_inventory(args: argparse.Namespace) -> int:
     db.init_db()
     try:
-        count = windows_inventory.inventory_scan(
-            args.scan_id, host=args.host, local=args.local
+        count = _run_enrichment(
+            args.scan_id, "windows", host=args.host, local=args.local
         )
     except (ValueError, windows_inventory.InventoryError) as exc:
         print(f"Error de inventario: {exc}", file=sys.stderr)
@@ -339,8 +352,8 @@ def cmd_inventory(args: argparse.Namespace) -> int:
 def cmd_inventory_linux(args: argparse.Namespace) -> int:
     db.init_db()
     try:
-        count = linux_inventory.inventory_scan(
-            args.scan_id, host=args.host, user=args.user, port=args.port, local=args.local
+        count = _run_enrichment(
+            args.scan_id, "linux", host=args.host, user=args.user, port=args.port, local=args.local
         )
     except (ValueError, linux_inventory.InventoryError) as exc:
         print(f"Error de inventario Linux: {exc}", file=sys.stderr)
@@ -353,7 +366,7 @@ def cmd_inventory_linux(args: argparse.Namespace) -> int:
 def cmd_patches(args: argparse.Namespace) -> int:
     db.init_db()
     try:
-        count = msrc.assess_scan(args.scan_id, release_id=args.release)
+        count = _run_enrichment(args.scan_id, "msrc", release_id=args.release)
     except (ValueError, msrc.MsrcError) as exc:
         print(f"Error MSRC: {exc}", file=sys.stderr)
         return 1
@@ -412,11 +425,10 @@ def cmd_msf(args: argparse.Namespace) -> int:
             print(f"  {line}")
 
     try:
-        saved = msf.verify_scan(
-            args.scan_id,
+        saved = _run_enrichment(
+            args.scan_id, msf.ENRICH_KIND,
             allow_public=args.allow_public,
             authorized_by=args.authorized_by or "",
-            progress=on_progress,
         )
     except msf.MsfScopeError as exc:
         print(f"\nAlcance: {exc}", file=sys.stderr)
@@ -524,6 +536,17 @@ def build_parser() -> argparse.ArgumentParser:
     register(sub)
     from .engine_cli import register as register_engines
     register_engines(sub)
+    from .job_cli import register_cli as register_jobs
+    register_jobs(sub)
+    for cli_module in ("software_cli", "integrations_cli"):
+        import importlib
+        try:
+            integration_cli = importlib.import_module(f"scopescan.{cli_module}")
+        except ModuleNotFoundError as exc:
+            if exc.name != f"scopescan.{cli_module}":
+                raise
+        else:
+            integration_cli.register_cli(sub)
 
     p_scan = sub.add_parser("scan", help="Escanear uno o varios objetivos")
     p_scan.add_argument("targets", nargs="+", help="IP, CIDR, rango o nombre de host")

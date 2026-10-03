@@ -259,6 +259,16 @@ _snapshot_connection: ContextVar[sqlite3.Connection | None] = ContextVar(
 
 
 @contextmanager
+def read_from_connection(conn: sqlite3.Connection) -> Iterator[None]:
+    """Reuse read getters inside an already owned transaction without new locks."""
+    token = _snapshot_connection.set(conn)
+    try:
+        yield
+    finally:
+        _snapshot_connection.reset(token)
+
+
+@contextmanager
 def read_snapshot() -> Iterator[None]:
     """Reuse one read transaction for all getters during an export."""
     if _snapshot_connection.get() is not None:
@@ -266,7 +276,8 @@ def read_snapshot() -> Iterator[None]:
         return
     with connect() as conn:
         conn.execute("PRAGMA query_only=ON")
-        conn.execute("BEGIN")
+        if not conn.in_transaction:
+            conn.execute("BEGIN")
         token = _snapshot_connection.set(conn)
         try:
             yield
@@ -280,12 +291,26 @@ def connect(path: Path | None = None) -> Iterator[sqlite3.Connection]:
     if path is None and snapshot is not None:
         yield snapshot
         return
-    conn = sqlite3.connect(path or db_path(), timeout=30)
+    from .durable_jobs import ownership
+    class FencedConnection(sqlite3.Connection):
+        def execute(self, sql, parameters=()):
+            # Worker guard already acquired this same transaction. Legacy claims
+            # may request BEGIN IMMEDIATE again; keep its existing atomic fence.
+            if self.in_transaction and sql.strip().upper() == "BEGIN IMMEDIATE":
+                return super().execute("SELECT 1")
+            return super().execute(sql, parameters)
+    conn = sqlite3.connect(path or db_path(), timeout=30,
+                          factory=FencedConnection if ownership.get() else sqlite3.Connection)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     conn.execute("PRAGMA journal_mode = WAL")
     try:
+        from .durable_jobs import guard
+        guard(conn)
         yield conn
+        # A long domain transaction can outlive its lease while holding the
+        # writer lock and preventing renewal. Fence again before its commit.
+        guard(conn, begin=False)
         conn.commit()
     except Exception:
         conn.rollback()
@@ -300,6 +325,19 @@ def init_db(path: Path | None = None) -> None:
         from .engine_store import migrate as migrate_engines
 
         migrate_engines(conn)
+        from .durable_jobs import migrate as migrate_jobs
+        migrate_jobs(conn)
+        from .scheduler import migrate as migrate_scheduler
+        migrate_scheduler(conn)
+        for module_name in ("software_store", "integrations_store"):
+            import importlib
+            try:
+                module = importlib.import_module(f"scopescan.{module_name}")
+            except ModuleNotFoundError as exc:
+                if exc.name != f"scopescan.{module_name}":
+                    raise
+            else:
+                module.migrate(conn)
         scan_columns = {row["name"] for row in conn.execute("PRAGMA table_info(scans)")}
         if "deletion_pending" not in scan_columns:
             conn.execute("ALTER TABLE scans ADD COLUMN deletion_pending INTEGER NOT NULL DEFAULT 0")
@@ -367,6 +405,8 @@ CREATE INDEX IF NOT EXISTS idx_exploit_runs_scan ON exploit_runs(scan_id, starte
         from .continuity import migrate
 
         migrate(conn)
+        from .durable_jobs import migrate_legacy_pending
+        migrate_legacy_pending(conn)
 
 
 def create_scan(
@@ -379,6 +419,7 @@ def create_scan(
     notes: str = "",
     scope_id: int | None = None,
     execution_context: dict[str, Any] | None = None,
+    reserve_job: bool = False,
 ) -> int:
     with connect() as conn:
         cur = conn.execute(
@@ -388,8 +429,16 @@ def create_scan(
             (name, targets, profile, now(), int(target_private), authorized_by, notes),
         )
         scan_id = int(cur.lastrowid)
+        context = dict(execution_context or {})
+        if context.get("pinned_targets"):
+            context.setdefault("namespace", f"scope:{scope_id}" if scope_id else f"scan:{scan_id}")
         conn.execute("UPDATE scans SET scope_id=?,execution_context=? WHERE id=?",
-                     (scope_id, json.dumps(execution_context or {}), scan_id))
+                     (scope_id, json.dumps(context), scan_id))
+        if reserve_job:
+            from .durable_jobs import enqueue
+            job_id = enqueue("scan", {"scan_id":scan_id}, scan_id=scan_id,
+                             idempotency_key=f"scan:{scan_id}", conn=conn)
+            conn.execute("UPDATE durable_jobs SET available_at=?,error=? WHERE id=?", (1e20, "Awaiting finalized scan plan submission; delete and requeue if interrupted", job_id))
         return scan_id
 
 
@@ -407,6 +456,9 @@ def set_status(scan_id: int, status: str, *, error: str | None = None) -> None:
         values.append(error)
     values.append(scan_id)
     with connect() as conn:
+        previous = conn.execute("SELECT status FROM scans WHERE id=?", (scan_id,)).fetchone()
+        if previous is None or previous[0] == status and status in {"done", "failed", "cancelled"}:
+            return
         conn.execute(f"UPDATE scans SET {', '.join(fields)} WHERE id = ?", values)
         if status in {"done", "failed", "cancelled"}:
             from .continuity import reconcile, sync_enrichment

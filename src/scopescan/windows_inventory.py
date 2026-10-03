@@ -11,7 +11,6 @@ import ipaddress
 import json
 import os
 import shutil
-import subprocess
 import sys
 
 from . import db
@@ -241,25 +240,30 @@ class InventoryError(RuntimeError):
     """No se pudo obtener el inventario autenticado."""
 
 
-def collect(host: str, *, local: bool = False) -> dict:
+def collect(host: str, *, local: bool = False, cancel=None, deadline=None) -> dict:
     if sys.platform != "win32":
         raise InventoryError("El inventario Windows requiere ejecutar ScopeScan en Windows")
     powershell = shutil.which("powershell.exe")
     if not powershell:
         raise InventoryError("No se encontro Windows PowerShell")
     command = base64.b64encode(SCRIPT.encode("utf-16-le")).decode("ascii")
-    env = os.environ.copy()
+    env = {key:value for key,value in os.environ.items() if key.upper() in {
+        "PATH", "SYSTEMROOT", "WINDIR", "COMSPEC", "TEMP", "TMP", "HOME",
+        "USERPROFILE", "APPDATA", "LOCALAPPDATA", "PSMODULEPATH", "PROGRAMFILES",
+        "PROGRAMFILES(X86)", "PROGRAMDATA"}}
     env["SCOPESCAN_TARGET"] = host
     env["SCOPESCAN_LOCAL"] = "1" if local else "0"
     try:
-        result = subprocess.run(
+        from .process_runner import run_process
+        result = run_process(
             [powershell, "-NoProfile", "-NonInteractive", "-EncodedCommand", command],
-            capture_output=True, text=True, encoding="utf-8", errors="replace",
-            timeout=120, check=False, env=env,
-            creationflags=subprocess.CREATE_NO_WINDOW,
+            timeout=120, env=env, cancel=cancel, deadline=deadline,
+            max_output_chars=8_000_000,
         )
-    except (OSError, subprocess.TimeoutExpired) as exc:
+    except OSError as exc:
         raise InventoryError(f"No se pudo ejecutar PowerShell: {exc}") from exc
+    if result.cancelled or result.timed_out or result.output_truncated:
+        raise InventoryError("Inventario Windows cancelado, vencido o salida excesiva")
     if result.returncode:
         stderr = result.stderr or ""
         detail = stderr.split("SCOPESCAN_ERROR: ", 1)[-1].splitlines()[0][:300] if (
@@ -278,7 +282,7 @@ def collect(host: str, *, local: bool = False) -> dict:
     return data
 
 
-def inventory_scan(scan_id: int, *, host: str | None = None, local: bool = False) -> int:
+def inventory_scan(scan_id: int, *, host: str | None = None, local: bool = False, cancel=None, deadline=None, before_target=None) -> int:
     """Consulta solo hosts presentes en un escaneo ya autorizado."""
     if db.get_scan(scan_id) is None:
         raise ValueError(f"No existe el escaneo {scan_id}")
@@ -291,7 +295,11 @@ def inventory_scan(scan_id: int, *, host: str | None = None, local: bool = False
     if local and not ipaddress.ip_address(targets[0]).is_loopback:
         raise ValueError("El modo local solo puede asociarse a un host loopback")
     for target in targets:
-        data = collect(target, local=local)
+        if before_target is not None:
+            before_target()
+        data = collect(target, local=local, **({"cancel":cancel,"deadline":deadline} if cancel is not None or deadline is not None else {}))
+        if cancel is not None and cancel.is_set():
+            raise InventoryError("Inventario cancelado antes de guardar")
         open_tcp_ports = {
             port["portid"] for found_host, ports in db.hosts_with_ports(scan_id)
             if found_host["address"] == target

@@ -40,6 +40,26 @@ def test_plan_rejects_ssh_identity_using_other_listener(monkeypatch):
     assert db.get_finding(fid)["lifecycle"] != "resolved"
 
 
+def test_web_plan_queues_without_identity_and_worker_revalidates(monkeypatch):
+    from scopescan import durable_jobs, jobs, worker
+    fid = _baseline(2222)
+    monkeypatch.delenv("SCOPESCAN_VERIFY_LINUX_IDENTITY", raising=False)
+    monkeypatch.setenv("SCOPESCAN_VERIFY_SSH_PORT", "22")
+    plan = verification.plan_verification([fid], authorized_by="owner", defer_identity=True)
+    assert plan.requests and not plan.missing_controls
+    scan_id = verification.queue_verification(plan)[0]
+    monkeypatch.setattr(linux_inventory, "collect", lambda *args, **kwargs: pytest.fail("No worker identity"))
+    job_id = jobs.QUEUE.submit(scan_id)
+    assert worker.run_once(job_id=job_id)["status"] == "failed"
+    assert db.get_finding(fid)["lifecycle"] != "resolved"
+    monkeypatch.setenv("SCOPESCAN_VERIFY_LINUX_IDENTITY", "1")
+    monkeypatch.setenv("SCOPESCAN_VERIFY_SSH_PORT", "2222")
+    monkeypatch.setattr(linux_inventory, "collect", lambda *args, **kwargs: _data(2222,"no"))
+    durable_jobs.retry(job_id)
+    assert worker.run_once(job_id=job_id)["status"] == "done"
+    assert db.get_finding(fid)["lifecycle"] == "resolved"
+
+
 @pytest.mark.parametrize("moment", ["queue", "execute"])
 def test_identity_port_change_after_preview_revalidated(monkeypatch, moment):
     fid = _baseline(22)

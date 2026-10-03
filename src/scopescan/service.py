@@ -80,6 +80,13 @@ def queue_scan(request: ScanRequest, *, prepared: PreparedScan | None = None) ->
     if prepared.request != request:
         raise InvalidTarget("El preview no corresponde a este encargo")
     name = request.name.strip() or f"{prepared.target_set.raw} ({request.profile})"
+    scope_snapshot = None
+    if request.scope_id is not None:
+        saved = db.get_scope(request.scope_id)
+        if saved is None:
+            raise InvalidTarget("El alcance guardado ya no existe")
+        scope_snapshot = {key:saved[key] for key in (
+            "profile","authorized_by","pinned_targets","resolutions","exclusions","max_hosts")}
     scan_id = db.create_scan(
         name=name,
         targets=prepared.target_set.raw,
@@ -87,12 +94,12 @@ def queue_scan(request: ScanRequest, *, prepared: PreparedScan | None = None) ->
         target_private=prepared.target_set.all_private,
         authorized_by=request.authorized_by,
         notes=request.notes,
+        scope_id=request.scope_id,
+        reserve_job=True,
+        execution_context={"pinned_targets": prepared.target_set.argv,
+                           "privileged":prepared.privileged,"profile":request.profile,
+                           "exclusions":request.exclusions,"scope_snapshot":scope_snapshot},
     )
-    db.set_scan_context(scan_id, scope_id=request.scope_id, execution_context={
-        "namespace": f"scope:{request.scope_id}" if request.scope_id else f"scan:{scan_id}",
-        "pinned_targets": prepared.target_set.argv, "privileged": prepared.privileged,
-        "profile": request.profile, "exclusions": request.exclusions,
-    })
     return scan_id
 
 
@@ -123,6 +130,14 @@ def execute(scan_id: int, *, cancel: threading.Event | None = None) -> None:
             from .verification import execute_authenticated
             execute_authenticated(scan_id, context, cancel=cancel)
             return
+        if row["scope_id"] is not None:
+            saved = db.get_scope(row["scope_id"])
+            snapshot = context.get("scope_snapshot")
+            if (saved is None or saved["authorized_by"] != row["authorized_by"]
+                    or saved["profile"] != row["profile"]
+                    or set(saved["pinned_targets"]) != set(context.get("pinned_targets", []))
+                    or snapshot and snapshot != {key:saved[key] for key in snapshot}):
+                raise InvalidTarget("El alcance, perfil, límites o autorización cambiaron; revisa y vuelve a encolar")
         pinned = context.get("pinned_targets")
         target_set = parse_targets(" ".join(pinned) if pinned else row["targets"], force=True)
         # Historical rows may predate pinned scopes. Resolve them safely once.

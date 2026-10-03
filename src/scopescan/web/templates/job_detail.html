@@ -1,0 +1,3 @@
+{% extends "base.html" %}
+{% block title %}Trabajo {{ job.id }} · ScopeScan{% endblock %}
+{% block content %}<h1>Trabajo #{{ job.id }}</h1><p>{{ job.kind }} · {{ job.status }} · Intentos {{ job.attempts }}/{{ job.max_attempts }}</p>{% if job.scan_id %}<a href="/scans/{{ job.scan_id }}">Escaneo #{{ job.scan_id }}</a>{% endif %}<p>{{ job.error }}</p><h2>Encargo</h2><pre>{{ job.payload }}</pre><h2>Resultado</h2><pre>{{ job.result }}</pre><a href="/jobs">Volver a trabajos</a>{% endblock %}

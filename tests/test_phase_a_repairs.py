@@ -128,20 +128,24 @@ def test_actual_reboot_collector_branch(distro, notifier, marker, expected, tmp_
 
 
 def test_collector_sends_lf_bytes_even_from_windows(monkeypatch):
-    from types import SimpleNamespace
 
     records = {"OS_RELEASE": "ID=alpine", "KERNEL": "test-kernel"}
     encoded = "\n".join(key + "\t" + base64.b64encode(value.encode()).decode()
                         for key, value in records.items()).encode()
 
-    def run(_argv, **kwargs):
-        assert isinstance(kwargs["input"], bytes)
-        assert b"\r\n" not in kwargs["input"]
-        assert not kwargs.get("text")
-        return SimpleNamespace(returncode=0, stdout=encoded, stderr=b"")
+    def run(argv, **kwargs):
+        import shlex
 
+        from scopescan.process_runner import ProcessResult
+        shell, option, script = shlex.split(argv[-1])
+        assert (shell, option) == ("sh", "-c")
+        assert script == linux_inventory.SCRIPT and "\r\n" not in script
+        assert kwargs["timeout"] == 180 and kwargs["max_output_chars"] == 8_000_000
+        return ProcessResult(0, encoded.decode(), "")
+
+    from scopescan import process_runner
     monkeypatch.setattr(linux_inventory.shutil, "which", lambda _name: "fixture-ssh")
-    monkeypatch.setattr(linux_inventory.subprocess, "run", run)
+    monkeypatch.setattr(process_runner, "run_process", run)
     assert linux_inventory.collect("192.168.1.10")["reboot_required"] is None
 
 

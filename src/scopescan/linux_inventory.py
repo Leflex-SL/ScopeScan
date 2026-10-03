@@ -12,8 +12,6 @@ import os
 import re
 import shlex
 import shutil
-import subprocess
-import sys
 
 from . import db
 from .authenticated_checks import linux_findings
@@ -325,6 +323,7 @@ def collect(
     user: str | None = None,
     port: int = 22,
     local: bool = False,
+    cancel=None, deadline=None,
 ) -> dict:
     if type(port) is not int or not 1 <= port <= 65535:
         raise InventoryError("El puerto SSH debe estar entre 1 y 65535")
@@ -352,18 +351,21 @@ def collect(
         if user:
             argv.extend(["-l", user])
         argv.extend([host, "sh", "-s"])
-    kwargs = {"creationflags": subprocess.CREATE_NO_WINDOW} if sys.platform == "win32" else {}
+    from .process_runner import run_process
+    if local:
+        argv = ["sh", "-c", SCRIPT]
+    else:
+        argv = argv[:-2] + ["sh -c " + shlex.quote(SCRIPT)]
     try:
-        result = subprocess.run(
-            argv,
-            input=SCRIPT.encode("utf-8"),
-            capture_output=True,
-            timeout=180,
-            check=False,
-            **kwargs,
-        )
-    except (OSError, subprocess.TimeoutExpired) as exc:
+        result = run_process(argv, timeout=180, cancel=cancel, deadline=deadline,
+                             max_output_chars=8_000_000,
+                             env={key:value for key,value in os.environ.items() if key.upper() in {
+                                 "PATH", "SYSTEMROOT", "WINDIR", "COMSPEC", "TEMP", "TMP",
+                                 "HOME", "USERPROFILE", "APPDATA", "LOCALAPPDATA", "SSH_AUTH_SOCK"}})
+    except OSError as exc:
         raise InventoryError(f"No se pudo ejecutar el inventario Linux: {exc}") from exc
+    if result.cancelled or result.timed_out or result.output_truncated:
+        raise InventoryError("Inventario Linux cancelado, vencido o salida excesiva")
     if result.returncode:
         stderr = (
             result.stderr.decode("utf-8", "replace")
@@ -387,6 +389,7 @@ def inventory_scan(
     user: str | None = None,
     port: int = 22,
     local: bool = False,
+    cancel=None, deadline=None, before_target=None,
 ) -> int:
     """Consulta por SSH solo hosts vivos pertenecientes al escaneo autorizado."""
     if db.get_scan(scan_id) is None:
@@ -409,7 +412,11 @@ def inventory_scan(
         for found_host, ports in db.hosts_with_ports(scan_id)
     }
     for target in targets:
-        data = collect(target, user=user, port=port, local=local)
+        if before_target is not None:
+            before_target()
+        data = collect(target, user=user, port=port, local=local, **({"cancel":cancel,"deadline":deadline} if cancel is not None or deadline is not None else {}))
+        if cancel is not None and cancel.is_set():
+            raise InventoryError("Inventario cancelado antes de guardar")
         findings = linux_findings(target, data, ports_by_host.get(target, set()))
         controls = linux_controls(data, ports_by_host.get(target, set()))
         db.save_host_inventory(

@@ -62,10 +62,6 @@ templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     db.init_db()
-    # Un escaneo que quedo 'running' de un arranque anterior ya no tiene hilo
-    # detras: se cierra para que el panel no mienta sobre su estado.
-    db.reset_stale_scans()
-    db.reset_stale_enrichments()
     yield
     QUEUE.shutdown()
 
@@ -80,6 +76,18 @@ app.include_router(continuity_router)
 from .engines import router as engines_router
 
 app.include_router(engines_router)
+from .jobs import router as jobs_router
+
+app.include_router(jobs_router)
+for route_module in ("software", "integrations"):
+    import importlib
+    try:
+        optional_routes = importlib.import_module(f"scopescan.web.{route_module}")
+    except ModuleNotFoundError as exc:
+        if exc.name != f"scopescan.web.{route_module}":
+            raise
+    else:
+        app.include_router(optional_routes.router)
 templates.env.globals["preview_evidence"] = preview_evidence
 
 
@@ -501,6 +509,15 @@ def inventory_collection(request: Request, scan_id: int, host: str, collection: 
 
 
 def _submit_enrichment(scan_id: int, kind: str, func, *args) -> None:
+    if db.get_scan(scan_id) is None:
+        return
+    from ..jobs import DurableQueue
+    if isinstance(QUEUE, DurableQueue):
+        try:
+            QUEUE.submit_enrichment(scan_id, kind, func, *args)
+        except ValueError as exc:
+            raise HTTPException(409, str(exc)) from exc
+        return
     if not db.enrichment_claim_active(scan_id, kind):
         return
     try:
@@ -513,6 +530,11 @@ def _submit_enrichment(scan_id: int, kind: str, func, *args) -> None:
 
 
 def _claim_enrichment(scan_id: int, kind: str) -> bool:
+    from ..jobs import DurableQueue
+    if isinstance(QUEUE, DurableQueue):
+        # DurableQueue performs the claim and serialization in one transaction.
+        existing = db.get_enrichment_statuses(scan_id).get(kind)
+        return existing is None or existing["status"] not in {"running", "queued"}
     try:
         return db.claim_enrichment_job(scan_id, kind)
     except db.ScanUnavailable as exc:
@@ -540,7 +562,7 @@ def enrich_nvd(
     if scan["status"] != "done":
         raise HTTPException(status_code=409, detail="El escaneo debe terminar primero")
     if _claim_enrichment(scan_id, "nvd"):
-        background_tasks.add_task(_submit_enrichment, scan_id, "nvd", _run_nvd, scan_id, bool(include_firmware))
+        _submit_enrichment( scan_id, "nvd", _run_nvd, scan_id, bool(include_firmware))
     return RedirectResponse(f"/scans/{scan_id}", status_code=303)
 
 
@@ -566,7 +588,7 @@ def windows_inventory_route(
     if host not in {row["address"] for row in db.get_hosts(scan_id)}:
         raise HTTPException(status_code=400, detail="Host fuera del escaneo")
     if _claim_enrichment(scan_id, "windows"):
-        background_tasks.add_task(_submit_enrichment, scan_id, "windows", _run_windows_inventory, scan_id, host, bool(local))
+        _submit_enrichment( scan_id, "windows", _run_windows_inventory, scan_id, host, bool(local))
     return RedirectResponse(f"/scans/{scan_id}", status_code=303)
 
 
@@ -599,8 +621,7 @@ def linux_inventory_route(
     if user and not linux_inventory.SSH_USER.fullmatch(user):
         raise HTTPException(status_code=400, detail="Usuario SSH invalido")
     if _claim_enrichment(scan_id, "linux"):
-        background_tasks.add_task(
-            _submit_enrichment, scan_id, "linux", _run_linux_inventory, scan_id, host, user, port, bool(local)
+        _submit_enrichment( scan_id, "linux", _run_linux_inventory, scan_id, host, user, port, bool(local)
         )
     return RedirectResponse(f"/scans/{scan_id}", status_code=303)
 
@@ -623,7 +644,7 @@ def enrich_msrc(scan_id: int, background_tasks: BackgroundTasks):
                for data in db.get_host_inventories(scan_id).values()):
         raise HTTPException(status_code=409, detail="Primero ejecuta el inventario Windows")
     if _claim_enrichment(scan_id, "msrc"):
-        background_tasks.add_task(_submit_enrichment, scan_id, "msrc", _run_msrc, scan_id)
+        _submit_enrichment( scan_id, "msrc", _run_msrc, scan_id)
     return RedirectResponse(f"/scans/{scan_id}", status_code=303)
 
 
@@ -644,7 +665,7 @@ def enrich_exploitdb(scan_id: int, background_tasks: BackgroundTasks):
     if not searchsploit_available():
         raise HTTPException(status_code=409, detail="searchsploit no esta instalado")
     if _claim_enrichment(scan_id, exploitdb.ENRICH_KIND):
-        background_tasks.add_task(_submit_enrichment, scan_id, exploitdb.ENRICH_KIND, _run_exploitdb, scan_id)
+        _submit_enrichment( scan_id, exploitdb.ENRICH_KIND, _run_exploitdb, scan_id)
     return RedirectResponse(f"/scans/{scan_id}", status_code=303)
 
 
@@ -665,7 +686,7 @@ def enrich_msf(scan_id: int, background_tasks: BackgroundTasks):
     if not msf_available():
         raise HTTPException(status_code=409, detail="msfconsole no esta instalado")
     if _claim_enrichment(scan_id, msf.ENRICH_KIND):
-        background_tasks.add_task(_submit_enrichment, scan_id, msf.ENRICH_KIND, _run_msf_verify, scan_id)
+        _submit_enrichment( scan_id, msf.ENRICH_KIND, _run_msf_verify, scan_id)
     return RedirectResponse(f"/scans/{scan_id}", status_code=303)
 
 
@@ -754,7 +775,7 @@ def msf_exploit(
         raise HTTPException(status_code=400, detail="Modulo no explotable o desconocido")
 
     if _claim_enrichment(scan_id, "metasploit-exploit"):
-        background_tasks.add_task(_submit_enrichment, scan_id, "metasploit-exploit", _run_msf_exploit, scan_id, host, portid, module)
+        _submit_enrichment( scan_id, "metasploit-exploit", _run_msf_exploit, scan_id, host, portid, module)
     return RedirectResponse(f"/scans/{scan_id}", status_code=303)
 
 
@@ -774,3 +795,8 @@ def findings_view(request: Request, min_severity: int = int(Severity.LOW),
             "min_severity": min_severity,
         },
     )
+
+
+from .body_limit import BodyLimitMiddleware
+
+app.add_middleware(BodyLimitMiddleware)

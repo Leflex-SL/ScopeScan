@@ -270,7 +270,8 @@ def verification_action(request: Request, finding_ids: str = Form(...),
     from .. import verification
     from .app import QUEUE
     try:
-        plan = verification.plan_verification(finding_ids.split(), authorized_by=authorized_by)
+        plan = verification.plan_verification(finding_ids.split(), authorized_by=authorized_by,
+                                              defer_identity=True)
         scan_ids = []
         failures = []
         if action == "queue":

@@ -88,7 +88,7 @@ def nmap_args_for_verification(spec: dict, *, privileged: bool) -> list[str]:
 
 
 def plan_verification(finding_ids: list[int | str], *, authorized_by: str = "",
-                      identity_configured: bool = False) -> VerificationPlan:
+                      identity_configured: bool = False, defer_identity: bool = False) -> VerificationPlan:
     if not authorized_by.strip():
         raise ValueError("La verificacion requiere un responsable de autorizacion")
     plan = VerificationPlan()
@@ -102,7 +102,7 @@ def plan_verification(finding_ids: list[int | str], *, authorized_by: str = "",
         if source.startswith("auth:"):
             platform = source.split(":")[1]
             known = authenticated_coverage(platform, {}, set())["controls"]
-            configured = os.environ.get(f"SCOPESCAN_VERIFY_{platform.upper()}_IDENTITY") == "1"
+            configured = defer_identity or os.environ.get(f"SCOPESCAN_VERIFY_{platform.upper()}_IDENTITY") == "1"
             if not configured:
                 reason = "Requiere identidad autenticada configurada en el entorno del worker"
             elif source not in known and not source.startswith("auth:windows:firewall:"):
@@ -111,13 +111,15 @@ def plan_verification(finding_ids: list[int | str], *, authorized_by: str = "",
                 spec = {"platform": platform, "source": source,
                         "port": row["port"], "protocol": row["protocol"]}
                 try:
-                    validate_ssh_identity_endpoint(spec)
+                    if not defer_identity:
+                        validate_ssh_identity_endpoint(spec)
                 except ValueError as exc:
                     plan.missing_controls.append({"finding_id": finding_id, "reason": str(exc)})
                     continue
                 group = {"targets": pin_targets(row["host"]).target_set.raw,
                          "authorized_by": authorized_by, "namespace": row["namespace"],
-                         "finding_ids": [finding_id], "authenticated": spec}
+                         "finding_ids": [finding_id], "authenticated": spec,
+                         "identity_deferred": defer_identity}
                 plan.requests.append(group)
                 plan.previews.append([f"inventory:{platform}", group["targets"], source,
                                       "identity:worker-environment"])
@@ -375,14 +377,16 @@ def _queue_authenticated(group: dict) -> int:
     platform = spec.get("platform")
     if platform not in {"linux", "windows"} or not spec["source"].startswith(f"auth:{platform}:"):
         raise ValueError("Control autenticado desconocido")
-    if os.environ.get(f"SCOPESCAN_VERIFY_{platform.upper()}_IDENTITY") != "1":
-        raise ValueError("La identidad autenticada no esta configurada en el worker")
-    validate_ssh_identity_endpoint(spec)
+    # Identity and SSH listener configuration are checked in the executing worker.
+    if not group.get("identity_deferred"):
+        if os.environ.get(f"SCOPESCAN_VERIFY_{platform.upper()}_IDENTITY") != "1":
+            raise ValueError("La identidad autenticada no esta configurada en el worker")
+        validate_ssh_identity_endpoint(spec)
     pinned = pin_targets(group["targets"]).target_set
     scan_id = db.create_scan(name="Verificacion de control autenticado", targets=pinned.raw,
                              profile="authenticated", target_private=pinned.all_private,
-                             authorized_by=group["authorized_by"])
-    db.set_scan_context(scan_id, execution_context={"namespace": group["namespace"],
+                             authorized_by=group["authorized_by"], reserve_job=True,
+                             execution_context={"namespace": group["namespace"],
                         "pinned_targets": pinned.argv, "authenticated": spec,
                         "verification_of": group["finding_ids"]})
     return scan_id
@@ -400,12 +404,15 @@ def execute_authenticated(scan_id: int, context: dict, *, cancel=None) -> None:
         db.set_status(scan_id, "cancelled", error="Cancelado antes de recopilar")
         return
     db.set_status(scan_id, "running")
-    db.set_progress(scan_id, 0, "Recopilando control; cancelacion efectiva al terminar la consulta acotada")
+    db.set_progress(scan_id, 0, "Recopilando control autenticado")
     if platform == "linux":
         data = linux_inventory.collect(host, user=os.environ.get("SCOPESCAN_VERIFY_SSH_USER"),
-                                       port=configured_ssh_port())
+                                       port=configured_ssh_port(), **({"cancel":cancel} if cancel is not None else {}))
     else:
-        data = windows_inventory.collect(host)
+        data = windows_inventory.collect(host, **({"cancel":cancel} if cancel is not None else {}))
+    if cancel is not None and cancel.is_set():
+        db.set_status(scan_id, "cancelled", error="Cancelado durante la recopilacion")
+        return
     # Host controls need no synthetic endpoint. Port controls need a fresh connection
     # observation; SSH collection itself establishes its actual SSH endpoint only.
     ssh_port = collected_ssh_port(data) if platform == "linux" else None

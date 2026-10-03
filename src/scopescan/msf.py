@@ -81,6 +81,7 @@ def verify_scan(
     authorized_by: str = "",
     cancel: threading.Event | None = None,
     progress: msf_runner.ProgressCallback | None = None,
+    before_target=None,
 ) -> int:
     """Lanza la verificacion Metasploit del escaneo. Devuelve nº de veredictos.
 
@@ -144,6 +145,8 @@ def verify_scan(
 
     try:
         for (module_path, portid), hosts in groups.items():
+            if before_target is not None:
+                before_target()
             if cancel is not None and cancel.is_set():
                 break
             _service, mod = meta[(module_path, portid)]
@@ -367,6 +370,7 @@ def exploit_target(
     allow_public: bool = False,
     cancel: threading.Event | None = None,
     progress: msf_runner.ProgressCallback | None = None,
+    before_target=None,
 ) -> str:
     """Lanza un exploit concreto contra un host. Devuelve el resultado (EXPLOITED/FAILED)."""
     row, mod, port = _validated_exploit_context(
@@ -404,6 +408,8 @@ def exploit_target(
     )
 
     try:
+        if before_target is not None:
+            before_target()
         argv = msf_runner.build_argv(rc_path, log_path=log_path)
         execution = msf_runner.run(argv, cancel=cancel, progress=progress)
     except Exception as exc:

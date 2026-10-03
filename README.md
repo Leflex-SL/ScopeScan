@@ -18,6 +18,12 @@ cobertura, remediacion con evidencia, riesgo explicable, alcances guardados,
 verificacion dirigida e importacion Nmap/externa. Todas estas operaciones estan
 disponibles en el panel y la CLI: [guia de uso](docs/continuous-assessment.md).
 
+Los motores opcionales Nuclei/SSLyze, los avisos Linux y la importación Vuls
+conservan versiones, cobertura y procedencia. Las integraciones añaden SBOM
+CycloneDX/SPDX, Syft/Grype, controles SCAP y destinos DefectDojo/Faraday/Greenbone.
+Consulta [software y controles](docs/software-compliance.md),
+[integraciones](docs/integrations.md) y [workers y programación](docs/durable-workers-scheduling.md).
+
 | Fase | Quién la hace | Resultado |
 |---|---|---|
 | Validación del objetivo | `targets.py` | IP, CIDR, rango o host; recuento de hosts; aviso si es público |
@@ -91,6 +97,18 @@ Comprueba que todo está en su sitio:
 .venv\Scripts\scopescan.exe serve
 ```
 
+En otra terminal, con el mismo directorio de datos, arranca el worker:
+
+```bash
+.venv\Scripts\scopescan.exe worker
+```
+
+El panel guarda los trabajos en SQLite. El worker ejecuta los escaneos y las
+acciones remotas; usa en ese proceso la identidad WinRM/OpenSSH o los privilegios
+necesarios. El proceso web puede ejecutarse sin elevar. Reiniciar el panel
+conserva la cola y los workers activos. `/jobs` muestra cancelación, reintentos,
+errores y programación UTC sobre alcances autorizados guardados.
+
 Abre <http://127.0.0.1:8000>. Desde ahí se lanzan escaneos, se sigue el progreso
 en vivo (nmap reporta el porcentaje cada 5 segundos), se filtran los hallazgos
 por severidad y se exporta el informe HTML, JSON completo o CSV de hallazgos.
@@ -109,6 +127,12 @@ scopescan scan 10.0.0.5 -p completo -r informe.html  # 65535 puertos + informe
 scopescan list                                       # histórico
 scopescan show 3                                     # resultado de un escaneo
 scopescan self-test                                  # chequeo local sin nmap ni red
+scopescan worker --once                              # ejecutar un job disponible
+scopescan jobs list                                  # cola persistente y estados
+scopescan jobs show 8                                # detalle del encargo y resultado
+scopescan jobs cancel 8                              # cancelación persistente
+scopescan schedule list                              # programaciones UTC explícitas
+scopescan schedule events                            # cambios/fallos/acciones requeridas
 scopescan report 3 -o auditoria.html                 # informe de uno ya hecho
 scopescan export 3 -f json -o auditoria.json         # datos completos para automatizar
 scopescan export 3 -f csv -o hallazgos.csv           # hallazgos para hoja de calculo
@@ -413,7 +437,10 @@ src/scopescan/
   compliance.py    resultados cumple/falla/sin datos y referencias
   db.py            SQLite
   service.py       orquestación de un escaneo completo
-  jobs.py          cola en segundo plano
+  jobs.py          fachada de la cola persistente
+  durable_jobs.py  claims, leases y cancelación SQLite
+  worker.py        ejecución separada de la web y fencing de escrituras
+  scheduler.py     slots UTC y eventos ante cambios relevantes
   report.py        informe HTML autocontenido
   export.py        JSON, CSV y bundle ZIP de entrega
   cli.py           scan | serve | list | report | export | enrich | exploitdb | msf | msf-catalog | msf-rc | inventory | patches | self-test

@@ -84,7 +84,7 @@ def preview(name: str, scope_id: int, *, ports: tuple[int, ...] = (), timeout: f
 def create_execution(plan: EnginePlan) -> int:
     return db.create_scan(name=f"{plan.engine} assessment", targets=" ".join(sorted({e.host for e in plan.endpoints})),
         profile=plan.engine, authorized_by=plan.scope.authorized_by, scope_id=plan.scope.scope_id,
-        execution_context={"namespace":plan.scope.namespace,"engine_plan":asdict(plan)})
+        execution_context={"namespace":plan.scope.namespace,"engine_plan":asdict(plan)}, reserve_job=True)
 
 
 def execute(plan: EnginePlan, *, scan_id: int | None = None, cancel: threading.Event | None = None) -> int:

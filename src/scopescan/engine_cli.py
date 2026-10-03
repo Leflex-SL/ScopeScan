@@ -29,7 +29,11 @@ def command(args):
             else:
                 if not args.yes:
                     raise ValueError("Review engine preview, then pass --yes to execute its authorized scope")
-                value = {"scan_id":engine_service.execute(plan)}
+                from .jobs import QUEUE
+                from .worker import execute_now
+                scan_id = engine_service.create_execution(plan)
+                execute_now(QUEUE.submit(scan_id))
+                value = {"scan_id":scan_id}
         elif args.operation == "import":
             with Path(args.path).open("rb") as stream:
                 payload=stream.read(8_000_001)

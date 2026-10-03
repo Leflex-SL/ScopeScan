@@ -1,0 +1,72 @@
+{% extends "base.html" %}
+{% block title %}Integraciones · ScopeScan{% endblock %}
+{% block content %}
+<h1>Integraciones</h1>
+<p>Los envíos y las lecturas remotas quedan en cola para un worker. Configura las credenciales en el entorno del worker; aquí se guardan los nombres de sus variables.</p>
+{% if delivery %}
+<h2>Entrega {{ delivery.id }} · {{ delivery.state }}</h2>
+<p>Test remoto: {{ delivery.remote_test_id or 'desconocido' }}. {{ delivery.error }}</p>
+<p>SHA del payload: {{ delivery.payload_hash }}. <a href="/api/integrations/deliveries/{{ delivery.id }}/raw">Descargar payload enviado</a></p>
+<pre>{{ delivery.response | tojson(indent=2) }}</pre>
+<h3>Historial de fases ({{ history_total }})</h3><table><tr><th>Fecha</th><th>Estado</th><th>Fase remota</th><th>Error</th></tr>{% for item in history %}<tr><td>{{ item.created_at }}</td><td>{{ item.state }}</td><td>{{ item.remote_status }}</td><td>{{ item.error }}</td></tr>{% endfor %}</table>
+{% if page_number > 1 %}<a href="?page_number={{ page_number - 1 }}">Anterior</a>{% endif %}{% if history_total > page_number * 50 %}<a href="?page_number={{ page_number + 1 }}">Siguiente</a>{% endif %}
+{% elif result %}
+<h2>Importación {{ result.id }} · {{ result.kind }}</h2>
+<p>Estado: {{ result.status }}. Fecha original: {{ result.observed_at }}. SHA original: {{ result.received_sha256 }}.</p>
+{% if result.scan_id %}<a href="/scans/{{ result.scan_id }}">Ver candidatos importados</a>{% endif %}
+<p>La evidencia externa no verifica explotación ni permite cerrar hallazgos locales.</p>
+<pre>{{ result.normalized | tojson(indent=2) }}</pre>
+<a href="/api/integrations/imports/{{ result.id }}/raw">Evidencia saneada</a>
+{% else %}
+<h2>Configurar destino</h2>
+<form method="post" action="/integrations/destinations">
+<input type="hidden" name="csrf_token" value="{{ request.state.csrf_token }}">
+<label>Nombre <input name="name" required maxlength="160"></label>
+<label>Tipo <select name="kind"><option>defectdojo</option><option>faraday</option><option>greenbone</option></select></label>
+<label>URL <input name="url" required placeholder="https://dojo.example"></label>
+<label>Opciones JSON <textarea name="options" required>{"token_env":"SCOPESCAN_DOJO_TOKEN","timeout":120}</textarea></label>
+<p>Faraday: username_env, password_env y workspace. GMP: username_env y password_env; URL tls://host:9390 o unix:///socket. HTTPS/TLS valida certificados.</p><button>Guardar destino</button>
+</form>
+<h2>Destinos ({{ destination_total }})</h2>
+<table><tr><th>ID</th><th>Nombre</th><th>Tipo</th><th>URL</th><th>Referencias</th></tr>{% for item in destinations %}<tr><td>{{ item.id }}</td><td>{{ item.name }}</td><td>{{ item.kind }}</td><td>{{ item.url }}</td><td>{{ item.settings | tojson }}</td></tr>{% endfor %}</table>
+<h2>Enviar a DefectDojo</h2>
+<p>Revisa antes <a href="/scans">el escaneo y su exportación</a>. Un envío nuevo usa engagement; reimport usa test. Las ausencias nunca cierran hallazgos remotos.</p>
+<form method="post" action="/integrations/deliver"><label>Destino ID <input name="destination_id" type="number" min="1" required></label><label>Escaneo ID <input name="scan_id" type="number" min="1" required></label><label>Engagement ID <input name="engagement_id" type="number" min="1"></label><label>Test ID para reimport <input name="test_id" type="number" min="1"></label><button>Autorizar y poner envío en cola</button></form>
+<h2>Leer Faraday/GMP</h2>
+<form method="post" action="/integrations/pull"><label>Destino ID <input name="destination_id" type="number" min="1" required></label><label>Alcance guardado ID <input name="scope_id" type="number" min="1" required></label><label>UUID del informe GMP existente <input name="report_id"></label><button>Poner lectura en cola</button></form>
+<h2>Importar un informe local</h2>
+<form method="post" action="/integrations/import" enctype="multipart/form-data"><label>Formato <select name="kind"><option>faraday</option><option>greenbone</option></select></label><label>Alcance ID <input name="scope_id" type="number" min="1" required></label><input name="file" type="file" required><button>Importar evidencia hasta 8 MB</button></form>
+<h2>Importaciones ({{ import_total }})</h2><table><tr><th>ID</th><th>Tipo</th><th>Estado</th><th>Observación original</th></tr>{% for item in imports %}<tr><td><a href="/integrations/imports/{{ item.id }}">{{ item.id }}</a></td><td>{{ item.kind }}</td><td>{{ item.status }}</td><td>{{ item.observed_at }}</td></tr>{% endfor %}</table>
+<h2>Entregas y recuperación ({{ delivery_total }})</h2><table><tr><th>ID</th><th>Estado</th><th>Test remoto</th><th>Job</th><th>Acción</th></tr>{% for item in deliveries %}<tr><td><a href="/integrations/deliveries/{{ item.id }}">{{ item.id }}</a></td><td>{{ item.state }} {{ item.error }}</td><td>{{ item.remote_test_id or 'pendiente' }}</td><td>{% if item.job_id %}<a href="/jobs/{{ item.job_id }}">{{ item.job_id }}</a>{% endif %}</td><td><form method="post" action="/integrations/poll"><input type="hidden" name="delivery_id" value="{{ item.id }}"><label>Test conciliado <input name="remote_test_id" type="number" min="1" placeholder="ID real si se desconoce"></label><button>Continuar solo consulta</button></form></td></tr>{% endfor %}</table>
+<p>Un POST ambiguo requiere comprobar el test remoto; continuar la consulta nunca repite el envío.</p>
+{% if page_number > 1 %}<a href="?page_number={{ page_number - 1 }}">Anterior</a>{% endif %}{% if destination_total > page_number * 50 or import_total > page_number * 50 or delivery_total > page_number * 50 %}<a href="?page_number={{ page_number + 1 }}">Siguiente</a>{% endif %}
+{% endif %}
+{% endblock %}
+{% block scripts %}
+<script>
+document.querySelectorAll('form[action^="/integrations/"]').forEach(form => {
+  form.addEventListener('submit', async event => {
+    event.preventDefault();
+    const button = form.querySelector('button');
+    button.disabled = true;
+    try {
+      const response = await fetch(form.action, {method: 'POST', body: new FormData(form)});
+      if (!response.ok) {
+        const body = await response.text();
+        const error = document.createElement('p');
+        error.setAttribute('role', 'alert');
+        error.textContent = body;
+        form.appendChild(error);
+        return;
+      }
+      window.location.assign(response.url);
+    } catch (error) {
+      const message = document.createElement('p');
+      message.setAttribute('role', 'alert');
+      message.textContent = 'No se pudo completar la petición. Revisa el estado antes de repetir un envío.';
+      form.appendChild(message);
+    } finally { button.disabled = false; }
+  });
+});
+</script>
+{% endblock %}

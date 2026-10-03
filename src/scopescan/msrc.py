@@ -21,7 +21,26 @@ class MsrcError(RuntimeError):
     """No se pudo determinar de forma fiable el nivel de parche Windows."""
 
 
-def _fetch_json(url: str, *, limit: int = 80_000_000) -> dict:
+def _fetch_json(url: str, *, limit: int = 80_000_000, cancel=None, deadline=None) -> dict:
+    if cancel is not None:
+        import sys
+
+        from .process_runner import run_process
+        script = "import sys,urllib.request; r=urllib.request.urlopen(urllib.request.Request(sys.argv[1],headers={'Accept':'application/json','User-Agent':'ScopeScan'}),timeout=60); data=r.read(int(sys.argv[2])+1); sys.stdout.buffer.write(data)"
+        result = run_process([sys.executable, "-c", script, url, str(limit)],
+                             cancel=cancel, timeout=60, deadline=deadline,
+                             max_output_chars=limit + 1)
+        if result.cancelled or result.timed_out or result.output_truncated or result.returncode:
+            raise MsrcError("MSRC request cancelled, timed out or unavailable")
+        if len(result.stdout.encode()) > limit:
+            raise MsrcError("Documento MSRC demasiado grande")
+        try:
+            data = json.loads(result.stdout)
+        except ValueError as exc:
+            raise MsrcError("MSRC no devolvio JSON valido") from exc
+        if not isinstance(data, dict):
+            raise MsrcError("Formato MSRC inesperado")
+        return data
     request = Request(
         url,
         headers={
@@ -189,6 +208,7 @@ def assess_inventory(
     inventory: dict,
     *,
     release_id: str | None = None,
+    cancel=None, deadline=None,
     fetch_json=_fetch_json,
 ) -> tuple[dict, list[dict]]:
     # os_version suele incluir una revision ficticia .0; el build real es Build.UBR.
@@ -212,7 +232,7 @@ def assess_inventory(
             chosen = release
             break
         try:
-            document = fetch_json(f"{BASE_URL}/{release}?api-version={API_VERSION}")
+            document = fetch_json(f"{BASE_URL}/{release}?api-version={API_VERSION}", **({"cancel":cancel,"deadline":deadline} if cancel is not None else {}))
         except MsrcError as exc:
             last_error = exc
             continue
@@ -233,7 +253,7 @@ def assess_inventory(
         unresolved = int(cached.get("unresolved", 0))
     else:
         if document is None:
-            document = fetch_json(f"{BASE_URL}/{chosen}?api-version={API_VERSION}")
+            document = fetch_json(f"{BASE_URL}/{chosen}?api-version={API_VERSION}", **({"cancel":cancel,"deadline":deadline} if cancel is not None else {}))
         catalog, unresolved = _catalog(document, product_id)
         db.put_feed_cache(cache_key, {"rows": catalog, "unresolved": unresolved})
     if not catalog:
@@ -270,9 +290,11 @@ def assess_inventory(
     return status, missing
 
 
-def assess_scan(scan_id: int, *, release_id: str | None = None) -> int:
+def assess_scan(scan_id: int, *, release_id: str | None = None, cancel=None, deadline=None) -> int:
     if db.get_scan(scan_id) is None:
         raise ValueError(f"No existe el escaneo {scan_id}")
+    import time
+    deadline = deadline or time.monotonic() + 180
     inventories = db.get_host_inventories(scan_id)
     windows = [
         (host, data)
@@ -286,7 +308,7 @@ def assess_scan(scan_id: int, *, release_id: str | None = None) -> int:
     errors: list[str] = []
     for host, inventory in windows:
         try:
-            status, missing = assess_inventory(inventory, release_id=release_id)
+            status, missing = assess_inventory(inventory, release_id=release_id, **({"cancel":cancel,"deadline":deadline} if cancel is not None else {}))
         except MsrcError as exc:
             errors.append(f"{host}: {exc}")
             continue

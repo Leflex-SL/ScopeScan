@@ -51,14 +51,14 @@ Puerta C: fixtures oficiales/versionados, procesos de motor simulados con protoc
 
 ## D. Integraciones y ejecución persistente
 
-- [ ] D01 Importar/exportar SBOM CycloneDX/SPDX y adaptar Syft/Grype para imágenes/componentes; conservar purl/distribución/procedencia.
-- [ ] D02 Exportación compatible y conector DefectDojo import/reimport, polling/fallos y secretos solo por configuración.
-- [ ] D03 Conectores/importaciones opcionales de Faraday y Greenbone (GMP), con verificación de contratos oficiales.
-- [ ] D04 Importación de evaluaciones SCAP/ComplianceAsCode preservando control, criterio, resultado, cobertura y versión; sin asumir certificación.
-- [ ] D05 Jobs durables SQLite para escaneo e integraciones, claim/ownership/heartbeat, recuperación de worker, cancelación y reintentos controlados.
-- [ ] D06 Scheduler persistente: ventanas, alcance/perfil, límites y registro de eventos únicamente ante cambios relevantes/fallo/acción requerida.
-- [ ] D07 Separación web/worker para operaciones con identidad o privilegios; acciones remotas no dependen de elevar el proceso web.
-- [ ] D08 Panel/CLI de motores, importaciones, destinos, jobs y programación, con errores accionables y estado parcial real.
+- [x] D01 Importar/exportar SBOM CycloneDX/SPDX y adaptar Syft/Grype para imágenes/componentes; conservar purl/distribución/procedencia.
+- [x] D02 Exportación compatible y conector DefectDojo import/reimport, polling/fallos y secretos solo por configuración.
+- [x] D03 Conectores/importaciones opcionales de Faraday y Greenbone (GMP), con verificación de contratos oficiales.
+- [x] D04 Importación de evaluaciones SCAP/ComplianceAsCode preservando control, criterio, resultado, cobertura y versión; sin asumir certificación.
+- [x] D05 Jobs durables SQLite para escaneo e integraciones, claim/ownership/heartbeat, recuperación de worker, cancelación y reintentos controlados.
+- [x] D06 Scheduler persistente: ventanas, alcance/perfil, límites y registro de eventos únicamente ante cambios relevantes/fallo/acción requerida.
+- [x] D07 Separación web/worker para operaciones con identidad o privilegios; acciones remotas no dependen de elevar el proceso web.
+- [x] D08 Panel/CLI de motores, importaciones, destinos, jobs y programación, con errores accionables y estado parcial real.
 
 Puerta D: reinicio con jobs pendientes, reclamación por dos workers, leases/cancelación/borrado, scheduler sin duplicados, importaciones y conectores con servidores HTTP/GMP falsos; verificación integral final.
 
@@ -72,4 +72,6 @@ Fase A verificada localmente el 2026-10-03: 278 pruebas pasan, Ruff, self-test, 
 
 Fase B completada y aceptada el 2026-10-03: 439 pruebas pasan, Ruff, self-test, pip check, build e instalación aislada final; el sdist recoge 439 pruebas y supera 10 casos de distribución. Verificación independiente, revisión fresca y escenarios de ciclo de remediación/cobertura registrados en `phase-b-verification.md`.
 
-Fase C completada y aceptada: 610 pruebas integrales pasan tras las reparaciones finales, Ruff, pip check y seis comprobaciones de self-test en instalación aislada. La rueda conserva exactamente 63 archivos Python/HTML/CSS/YAML; el sdist recoge 610 pruebas y supera 14 casos de distribución. Contratos reales simulados, migración desde B, dos procesos compartiendo presupuesto NVD, cobertura Host/SNI y revisiones independientes registrados en `phase-c-verification.md`. D01–D08 siguen pendientes; la matriz remota Linux/Python 3.11 no se ha ejecutado en esta sesión.
+Fase C completada y aceptada: 610 pruebas integrales pasan tras las reparaciones finales, Ruff, pip check y seis comprobaciones de self-test en instalación aislada. La rueda conserva exactamente 63 archivos Python/HTML/CSS/YAML; el sdist recoge 610 pruebas y supera 14 casos de distribución. Contratos reales simulados, migración desde B, dos procesos compartiendo presupuesto NVD, cobertura Host/SNI y revisiones independientes registrados en `phase-c-verification.md`.
+
+Fase D completada y aceptada: 743 pruebas integrales finales pasan en 622,54 s, Ruff, pip check y seis comprobaciones de self-test. Rueda/sdist conservan exactamente 91 archivos Python/HTML/CSS/YAML; el sdist contiene los 37 archivos Python de tests, recoge 743 casos y supera una selección de 48. Instalación aislada, CLI/UI, migración desde C, dos procesos con presupuesto SQLite y scheduler, grants por colector y revisiones independientes registrados en `phase-d-verification.md`. A/B/C/D quedan completadas en el alcance autorizado. La verificación local usa Windows/Python 3.13.5; la matriz remota Linux/Python 3.11 sigue sin ejecutarse en esta sesión.

@@ -109,11 +109,12 @@ def _run(args: argparse.Namespace) -> int:
             _json({"command": prepared.argv_preview, "warnings": prepared.warnings,
                    "targets": prepared.target_set.raw, "hosts": prepared.target_set.hosts})
         elif action == "run":
-            from . import service
             if not args.yes:
                 raise ValueError("Revisa scope preview y usa --yes para ejecutar el alcance autorizado")
             scan_id = scopes.queue_scope(args.scope_id)
-            service.execute(scan_id)
+            from .jobs import QUEUE
+            from .worker import execute_now
+            execute_now(QUEUE.submit(scan_id))
             scan = dict(db.get_scan(scan_id))
             _json(scan)
             return 0 if scan["status"] == "done" else 1
@@ -125,15 +126,17 @@ def _run(args: argparse.Namespace) -> int:
         _json({"scan_id": scan_id, "scan": dict(db.get_scan(scan_id)),
                "delta": db.scan_delta(scan_id)})
     elif args.command == "verify":
-        from . import service, verification
+        from . import verification
         plan = verification.plan_verification(args.finding_ids, authorized_by=args.authorized_by)
         if args.run:
             if not args.yes:
                 raise ValueError("Usa --yes para ejecutar la verificacion autorizada")
             scan_ids = verification.queue_verification(plan)
             statuses = []
+            from .jobs import QUEUE
+            from .worker import execute_now
             for scan_id in scan_ids:
-                service.execute(scan_id)
+                execute_now(QUEUE.submit(scan_id))
                 statuses.append(dict(db.get_scan(scan_id)))
             _json({"plan": dataclasses.asdict(plan), "scans": statuses,
                    "partial": bool(plan.missing_controls)})

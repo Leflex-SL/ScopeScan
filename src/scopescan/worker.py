@@ -3,12 +3,18 @@ from __future__ import annotations
 
 import importlib
 import json
+import sqlite3
 import threading
 import time
 
 from . import db, durable_jobs
 
 HANDLERS = {}
+# Long scans must survive brief stalls (another process holding the SQLite
+# writer lock, a VM pause); renewal stays frequent. A crashed worker's job is
+# recoverable by another worker once its lease (<= LEASE_SECONDS) expires.
+LEASE_SECONDS = durable_jobs.DEFAULT_LEASE_SECONDS
+HEARTBEAT_SECONDS = 10
 
 
 def register_handler(kind, handler):
@@ -121,19 +127,29 @@ def register_builtin_handlers():
             module.register_jobs()
 
 
-def run_once(*, job_id=None, lease_seconds=30):
+def run_once(*, job_id=None, lease_seconds=LEASE_SECONDS):
     register_builtin_handlers()
     row = durable_jobs.claim(job_id=job_id, lease_seconds=lease_seconds)
     if row is None:
         return None
     context, stop = JobContext(row), threading.Event()
+    expires = row["lease_until"]
     def renew():
-        while not stop.wait(lease_seconds / 3):
+        nonlocal expires
+        while not stop.wait(min(HEARTBEAT_SECONDS, lease_seconds / 3)):
+            attempted = time.time()
             try:
                 if not durable_jobs.heartbeat(row["id"], row["owner"], lease_seconds=lease_seconds):
                     context.cancel.set()
                     return
-            except Exception:  # noqa: BLE001 - a heartbeat failure must stop the operation
+                expires = attempted + lease_seconds
+            except sqlite3.OperationalError:
+                # Transient (e.g. writer lock busy): retry until the lease really
+                # ends. Commits stay fenced by durable_jobs.guard, so keeping on is safe.
+                if time.time() >= expires:
+                    context.cancel.set()
+                    return
+            except Exception:  # noqa: BLE001 - any other heartbeat failure must stop the operation
                 context.cancel.set()
                 return
     thread = threading.Thread(target=renew, daemon=True)

@@ -12,6 +12,7 @@ from . import db
 
 ownership = contextvars.ContextVar("job_ownership", default=None)
 TERMINAL = {"done", "partial", "failed", "cancelled"}
+DEFAULT_LEASE_SECONDS = 120
 
 
 class JobLost(RuntimeError):
@@ -155,7 +156,7 @@ def recover(conn, *, stamp=None):
             db._delete_scan_rows(conn, row[0])
 
 
-def claim(*, lease_seconds=30, job_id=None):
+def claim(*, lease_seconds=DEFAULT_LEASE_SECONDS, job_id=None):
     if not 2 <= lease_seconds <= 3600:
         raise ValueError("Lease must be 2..3600 seconds")
     with db.connect() as conn:
@@ -180,8 +181,11 @@ def claim(*, lease_seconds=30, job_id=None):
         return result
 
 
-def heartbeat(job_id, owner, *, lease_seconds=30):
+def heartbeat(job_id, owner, *, lease_seconds=DEFAULT_LEASE_SECONDS):
     with db.connect() as conn:
+        # Take the writer lock first: a stamp read before a long lock wait could
+        # revive a lease that expired meanwhile.
+        conn.execute("BEGIN IMMEDIATE")
         stamp = time.time()
         return conn.execute("UPDATE durable_jobs SET lease_until=?,updated_at=? WHERE id=? AND owner=? AND status='running' AND lease_until>=? AND cancel_requested=0", (stamp + lease_seconds, stamp, job_id, owner, stamp)).rowcount == 1
 

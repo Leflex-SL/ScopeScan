@@ -66,6 +66,29 @@ def test_heartbeat_requires_current_unexpired_owner():
     assert not queue.heartbeat(job_id, row["owner"])
 
 
+def test_transient_heartbeat_error_does_not_cancel_live_lease(monkeypatch):
+    """Fails if a transient OperationalError in the heartbeat cancels the job at once."""
+    import sqlite3
+    calls = []
+    real = queue.heartbeat
+    def flaky(*args, **kwargs):
+        calls.append(1)
+        if len(calls) <= 2:
+            raise sqlite3.OperationalError("database is locked")
+        return real(*args, **kwargs)
+    monkeypatch.setattr(worker, "HEARTBEAT_SECONDS", 0.05)
+    monkeypatch.setattr(queue, "heartbeat", flaky)
+    def handler(payload, context):
+        deadline = time.monotonic() + 5
+        while len(calls) < 4 and time.monotonic() < deadline:
+            time.sleep(0.01)
+        return {"cancelled": context.cancel.is_set()}
+    worker.register_handler("test.flaky", handler)
+    row = worker.run_once(job_id=queue.enqueue("test.flaky", {}))
+    assert len(calls) >= 4
+    assert row["status"] == "done" and json.loads(row["result"]) == {"cancelled": False}
+
+
 def test_unsafe_expired_external_write_requires_review():
     job_id = queue.enqueue("test.write", {}, retry_safe=False)
     queue.claim(job_id=job_id)
